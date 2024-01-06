@@ -1,0 +1,8 @@
+{
+    "id_columns": [0, 1, 2, 3],
+    "data_column_names": 2,
+    "header_row_index": 5,
+    "data_column_headers": {"2":"Analyte", "3":"Units", "4":"Measurement Basis"},
+    "data_rows": null,
+    "data_columns": null
+}

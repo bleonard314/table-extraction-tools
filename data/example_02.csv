@@ -1,0 +1,11 @@
+﻿Laboratory Name,,,,,,,,,
+Project Name,,,,,,,,,
+,,,,Arsenic,,Cadmium,,Copper,
+,,,,mg/kg,,mg/kg,,mg/kg,
+,,,,dry,,dry,,dry,
+Client sample ID,Lab sample ID,Preparation date,Analysis date,Concentration,Qualifier,Concentration,Qualifier,Concentration,Qualifier
+SD00231,45298-01,6/23/2013,6/24/2013,0.11,U,112,,251,
+SD00232,45298-02,6/23/2013,6/24/2013,8.21,,582,,396,
+SD00233,45298-03,6/23/2013,6/24/2013,0.11,U,45.1,,2.4,U
+SD00235,45298-04,6/23/2013,6/24/2013,0.11,U,69,,2.4,U
+SD00236,45298-05,6/23/2013,6/24/2013,4.53,,98.9,,85.8,

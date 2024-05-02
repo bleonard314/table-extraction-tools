@@ -12,16 +12,13 @@ def normalize_crosstab(
     Transforms a cross-tabulated dataframe into a flattened "normalized" format suitable for database ingestion or
     further analysis.
 
-    Parameters: df (pd.DataFrame): The original dataframe containing crosstabbed data. id_columns (list of int or
-    dict): Column indices or names in the dataframe that should be preserved in the flattened format.
-    data_column_names (list of int): Names of columns in the header row or an integer indicating the number of
-    columns to use from the header row. header_row_index (int, optional): The index of the row used for 'id_columns'
-    and 'data_column_names' values if a list of integers is supplied. Defaults to the last row in
-    'data_column_headers' if not provided. data_column_headers (dict of {int: str}): A dictionary mapping indices of
-    rows containing column headers to their names. data_rows (list of int, optional): Row indices indicating which
-    rows contain the data to be included in the flattened dataframe. Defaults to all rows after the last header row.
-    data_columns (list of int, optional): Column indices that contain the data to be included in the flattened
-    dataframe. Defaults to all columns after 'id_columns'.
+    Parameters: df (pd.DataFrame): The original dataframe containing crosstabbed data.
+    id_columns (list of int or dict): Column indices or names in the dataframe that should be preserved in the flattened format.
+    data_column_names (list of int): Names of columns in the header row or an integer indicating the number of columns. columns to use from the header row.
+    header_row_index (int, optional): The index of the row used for 'id_columns' and 'data_column_names' values if a list of integers is supplied. Defaults to the last row in 'data_column_headers' if not provided. data_column_headers (dict of {int: str}): A dictionary mapping indices of
+    rows containing column headers to their names.
+    data_rows (list of int, optional): Row indices indicating which rows contain the data to be included in the flattened dataframe. Defaults to all rows after the last header row.
+    data_columns (list of int, optional): Column indices that contain the data to be included in the flattened dataframe. Defaults to all columns after 'id_columns'.
 
     Returns:
     pd.DataFrame: A transformed dataframe in a flat, tabular format.

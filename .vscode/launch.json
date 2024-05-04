@@ -5,8 +5,15 @@
     "version": "0.2.0",
     "configurations": [
         {
+            "name": "Python: Current File",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal"
+        },
+        {
             "name": "Python: Streamlit",
-            "type": "python",
+            "type": "debugpy",
             "request": "launch",
             "module": "streamlit",
             "args": [

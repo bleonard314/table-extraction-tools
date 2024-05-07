@@ -8,7 +8,6 @@ import yaml
 import inflection
 import os
 import logging
-from concurrent.futures import ThreadPoolExecutor
 
 def find_keyword_pages(
     pdf_path,

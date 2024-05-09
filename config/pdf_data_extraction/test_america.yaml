@@ -1,0 +1,107 @@
+# Configuration template for PDF data extraction
+
+# Page selection options
+page_selection:
+  explicit_pages: null  # List specific page numbers to include, or set to null to use keyword-based selection
+  require_all_keywords: false  # If true, all keywords must be present on a page to include it in the extraction
+  keywords_to_keep:  # List of keywords that a page must contain to be included in the extraction
+    - "Client Sample Results"
+  keywords_to_remove:  # List of keywords that, if present on a page, exclude it from the extraction
+    - "Table of Contents"
+
+# Bounding box for the data table to specify where to extract tabular data
+table_area:
+- 20
+- 20
+- 590
+- 730
+
+# Horizontal pixel positions of the vertical lines separating table columns
+table_columns:
+- 176
+- 223
+- 276
+- 323
+- 368
+- 417
+- 437
+- 492
+- 554
+
+# Names of columns in the data table
+table_column_names:
+- Analyte
+- Result
+- Qualifier
+- RL
+- MDL
+- Unit
+- D
+- Prepared
+- Analyzed
+- Dil Fac
+
+# Regular expression patterns for extracting metadata from non-tabular text
+metadata_patterns:
+- pattern: "Project/Site: (.*)"
+  columns:
+    - Project/Site
+  fill_direction: "down"
+
+- pattern: "Client: (.*?) TestAmerica Job ID: (.*)"
+  columns:
+    - Client
+    - TestAmerica Job ID
+  fill_direction: "down"
+
+- pattern: "Client Sample ID: (.*?) Lab Sample ID: (.*)"
+  columns:
+    - Client Sample ID
+    - Lab Sample ID
+  fill_direction: "down"
+
+- pattern: "Date Collected: (.*?) Matrix: (.*)"
+  columns:
+    - Date Collected
+    - Matrix
+  fill_direction: "down"
+
+- pattern: "Date Received: (.*?) Percent Solids: (.*)"
+  columns:
+    - Date Received
+    - Percent Solids
+  fill_direction: "down"
+
+- pattern: "Method: (.*)"
+  columns:
+    - Method
+  fill_direction: "down"
+
+# Bounding boxes for extracting specific text elements that have fixed positions on the page
+fixed_text_areas:
+  Lab Name:
+  - 488
+  - 733
+  - 587
+  - 749
+  PDF Date:
+  - 500
+  - 760
+  - 600
+  - 780
+  PDF Page Number:
+  - 260
+  - 760
+  - 360
+  - 780
+
+# Post-processing options for data cleaning and filtering
+post_processing:
+  explicit_line_numbers: null  # Specify line numbers to include, set to null by default
+  column_filters:
+    - column: Result
+      regex: "^[0-9]+(\\.[0-9]+)?$"  # Keep only numeric results
+    - column: Unit
+      regex: "^(ug/Kg|mg/Kg|ug/L|mg/L|%|SU|umol/g)$"  # Filter for specific unit values
+  convert_column_names: True # Convert column names to lower snake case
+  convert_data_types: True # Convert data types to numeric, date, etc.

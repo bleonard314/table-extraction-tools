@@ -1,0 +1,78 @@
+page_selection:
+  explicit_pages: null
+  require_all_keywords: true
+  keywords_to_keep: ['Certificate of Analysis', 'Sample ID']
+  keywords_to_remove: []
+
+table_area:
+- 15
+- 20
+- 600
+- 740
+
+table_columns:
+- 161
+- 205
+- 249
+- 309
+- 391
+- 471
+- 541
+
+table_column_names:
+- Analyte
+- Result
+- Units
+- Minimum Reporting Limit
+- Method
+- Preparation Date/Time
+- Analysis Date/Time
+- Flag(s)
+
+metadata_patterns:
+- pattern: "PO#: (.*)"
+  columns:
+    - PO#
+  fill_direction: "down"
+
+- pattern: "Receipt: (.*)"
+  columns:
+    - Receipt
+  fill_direction: "down"
+
+- pattern: "Date Reported: (.*)"
+  columns:
+    - Date Reported
+  fill_direction: "down"
+
+- pattern: "Project Name: (.*)"
+  columns:
+    - Project Name
+  fill_direction: "down"
+
+- pattern: "Sample ID: (.*)"
+  columns:
+    - Sample ID
+  fill_direction: "down"
+
+- pattern: "Matrix: (.*?) Lab ID: (.*)"
+  columns:
+    - Matrix
+    - Lab ID
+  fill_direction: "down"
+
+- pattern: "Date Sampled: (.*?) Sampled By: (.*)"
+  columns:
+    - Date Sampled
+    - Sampled By
+  fill_direction: "down"
+
+fixed_text_areas: {}
+
+post_processing:
+  explicit_line_numbers: null  # Specify line numbers to include, set to null by default
+  column_filters:
+    - column: Units
+      regex: "^(%|mg/kg dry)$"  # Filter for specific unit values
+  convert_column_names: False # Convert column names to lower snake case
+  convert_data_types: True # Convert data types to numeric, date, etc.

@@ -9,6 +9,158 @@ import inflection
 import os
 import logging
 
+class PDFExtractionConfig:
+    def __init__(self, config_path=None, config_dict=None):
+        # Load configuration from a YAML file or a dictionary directly
+        if config_path:
+            with open(config_path, 'r') as file:
+                self.config = yaml.safe_load(file)
+        elif config_dict:
+            self.config = config_dict
+        else:
+            self.config = self.create_blank_config()
+
+        self._load_config_attributes()
+
+    @staticmethod
+    def create_blank_config():
+        """Generate a blank configuration with default structure."""
+        return {
+            "page_selection": {
+                "explicit_pages": None,
+                "require_all_keywords": False,
+                "keywords_to_keep": [],
+                "keywords_to_remove": []
+            },
+            "table_area": [0, 0, 0, 0],
+            "table_columns": [],
+            "table_column_names": [],
+            "metadata_patterns": [],
+            "fixed_text_areas": {},
+            "post_processing": {
+                "explicit_line_numbers": None,
+                "column_filters": [],
+                "convert_column_names": False,
+                "convert_data_types": False
+            }
+        }
+    
+    def _load_config_attributes(self):
+        self._page_selection = self.config.get('page_selection', {})
+        self._table_area = self.config.get('table_area', [])
+        self._table_columns = self.config.get('table_columns', [])
+        self._table_column_names = self.config.get('table_column_names', [])
+        self._metadata_patterns = self.config.get('metadata_patterns', [])
+        self._fixed_text_areas = self.config.get('fixed_text_areas', {})
+        self._post_processing = self.config.get('post_processing', {})
+
+    @property
+    def page_selection(self):
+        return self._page_selection
+
+    @page_selection.setter
+    def page_selection(self, value):
+        self._page_selection = value
+        self.config['page_selection'] = value
+
+    @property
+    def table_area(self):
+        return self._table_area
+
+    @table_area.setter
+    def table_area(self, value):
+        self._table_area = value
+        self.config['table_area'] = value
+
+    @property
+    def table_columns(self):
+        return self._table_columns
+    
+    @table_columns.setter
+    def table_columns(self, value):
+        self._table_columns = value
+        self.config['table_columns'] = value
+    
+    @property
+    def table_column_names(self):
+        return self._table_column_names
+    
+    @table_column_names.setter
+    def table_column_names(self, value):
+        self._table_column_names = value
+        self.config['table_column_names'] = value
+    
+    @property
+    def metadata_patterns(self):
+        return self._metadata_patterns
+    
+    @metadata_patterns.setter
+    def metadata_patterns(self, value):
+        self._metadata_patterns = value
+        self.config['metadata_patterns'] = value
+    
+    @property
+    def fixed_text_areas(self):
+        return self._fixed_text_areas
+    
+    @fixed_text_areas.setter
+    def fixed_text_areas(self, value):
+        self._fixed_text_areas = value
+        self.config['fixed_text_areas'] = value
+    
+    @property
+    def post_processing(self):
+        return self._post_processing
+    
+    @post_processing.setter
+    def post_processing(self, value):
+        self._post_processing = value
+        self.config['post_processing'] = value
+
+    def save_to_yaml(self, output_path):
+        """Save the current configuration to a YAML file."""
+        with open(output_path, 'w') as file:
+            yaml.safe_dump(self.config, file, sort_keys=False)
+
+    def _validate_area(self, area):
+        """Validate that a bounding box is in [x0, y0, x1, y1] format with x0 < x1 and y0 < y1."""
+        if not isinstance(area, list) or len(area) != 4:
+            raise ValueError("Bounding box must be a list with exactly four coordinates [x0, y0, x1, y1].")
+        x0, y0, x1, y1 = area
+        if not (isinstance(x0, (int, float)) and isinstance(y0, (int, float)) and
+                isinstance(x1, (int, float)) and isinstance(y1, (int, float))):
+            raise ValueError("Coordinates must be numeric values.")
+        if not (x0 < x1 and y0 < y1):
+            raise ValueError("Bounding box coordinates should follow x0 < x1 and y0 < y1.")
+
+    def validate(self):
+        # Validate the whole configuration using existing checks
+        # This would involve calling _validate_area for relevant attributes etc.
+        return True
+
+def find_keyword_text(keyword_pages, page_num, text, keywords_keep=None, keywords_remove=None, require_all=True):
+    # Check if page should be excluded based on keywords_remove
+    if keywords_remove and any(
+        keyword in text for keyword in keywords_remove
+    ):
+        return False
+
+    # Check if all or any keywords_keep are present in the text
+    if keywords_keep:
+        if require_all:
+            if all(keyword in text for keyword in keywords_keep):
+                return True
+        else:
+            if any(keyword in text for keyword in keywords_keep):
+                return True
+    else:
+        # If no keywords to keep are provided, consider all pages
+        return True
+    
+# class PDFExtraction:
+#     def __init__(self, pdf_path):
+#         self.pdf_path = pdf_path
+        
 def find_keyword_pages(
     pdf_path,
     keywords_keep=None,
@@ -24,12 +176,12 @@ def find_keyword_pages(
     keywords_keep (list, optional): A list of keywords to search for.
                                     If provided, pages must contain all these keywords.
     keywords_remove (list, optional): A list of keywords.
-                                      Pages containing any of these keywords will be excluded.
+                                    Pages containing any of these keywords will be excluded.
     require_all (bool, optional): If True, all keywords must be present on a page.
-                                  If False, any of the keywords can be present on a page.
-                                  Defaults to True.
+                                If False, any of the keywords can be present on a page.
+                                Defaults to True.
     use_pdfplumber (bool, optional): If True, use pdfplumber for PDF parsing. If False, use PyMuPDF (fitz).
-                                      Defaults to True.
+                                    Defaults to True.
 
     Returns:
     list: A list of page numbers containing the keywords.
@@ -45,52 +197,21 @@ def find_keyword_pages(
                 print(f"Processing page {page_num}/{total_pages}...", end="\r")
                 # Extract text from the page
                 text = page.extract_text()
-
-                # Check if page should be excluded based on keywords_remove
-                if keywords_remove and any(
-                    keyword in text for keyword in keywords_remove
-                ):
-                    continue
-
-                # Check if all or any keywords_keep are present in the text
-                if keywords_keep:
-                    if require_all:
-                        if all(keyword in text for keyword in keywords_keep):
-                            keyword_pages.append(page_num)
-                    else:
-                        if any(keyword in text for keyword in keywords_keep):
-                            keyword_pages.append(page_num)
-                else:
-                    # If no keywords to keep are provided, consider all pages
+                if find_keyword_text(keyword_pages, page_num, text, keywords_keep, keywords_remove, require_all):
                     keyword_pages.append(page_num)
+
     else:
         # Use PyMuPDF (fitz)
         pdf_document = fitz.open(pdf_path)
 
         # Iterate over each page
         for page_num in range(pdf_document.page_count):
-            print(
-                f"Processing page {page_num + 1}/{pdf_document.page_count}...", end="\r"
-            )
+            print(f"Processing page {page_num + 1}/{pdf_document.page_count}...", end="\r")
 
             # Extract text from the page
             page = pdf_document.load_page(page_num)
             text = page.get_text()
-
-            # Check if page should be excluded based on keywords_remove
-            if keywords_remove and any(keyword in text for keyword in keywords_remove):
-                continue
-
-            # Check if all or any keywords_keep are present in the text
-            if keywords_keep:
-                if require_all:
-                    if all(keyword in text for keyword in keywords_keep):
-                        keyword_pages.append(page_num + 1)  # Adjust to 1-based index
-                else:
-                    if any(keyword in text for keyword in keywords_keep):
-                        keyword_pages.append(page_num + 1)  # Adjust to 1-based index
-            else:
-                # If no keywords to keep are provided, consider all pages
+            if find_keyword_text(keyword_pages, page_num, text, keywords_keep, keywords_remove, require_all):
                 keyword_pages.append(page_num + 1)  # Adjust to 1-based index
 
     return keyword_pages
@@ -126,96 +247,6 @@ def subset_pdf(pdf_path, pages_of_interest, output_path):
         # Write the output PDF to a file
         with open(output_path, "wb") as output_file:
             pdf_writer.write(output_file)
-
-
-def select_rectangle(image, display_resolution=100):
-    """
-    Allows the user to draw a rectangle on the image using a RectangleSelector.
-
-    Args:
-    image (numpy.ndarray): The image to be displayed.
-    display_resolution (int, optional): The display resolution of the image. Defaults to 100.
-
-    Returns:
-    list: A list containing the coordinates of the drawn rectangle in the format [x1, y1, x2, y2].
-    """
-    # Global variable to store rectangle coordinates
-    rect_coords = None
-
-    # Function to handle the rectangle selection event
-    def onselect(eclick, erelease):
-        nonlocal rect_coords
-        # Correctly capture the coordinates respecting the order
-        x1, y1 = int(eclick.xdata), int(eclick.ydata)
-        x2, y2 = int(erelease.xdata), int(erelease.ydata)
-        rect_coords = [x1, y1, x2, y2]
-        print(f"Rectangle from ({x1}, {y1}) to ({x2}, {y2})")
-
-    # Create a figure and axis
-    fig, ax = plt.subplots(figsize=(15, 10))
-
-    # Display the image
-    dpi = display_resolution
-    extent = (0, image.width, image.height, 0)
-    ax.imshow(image.original, cmap="gray", extent=extent)
-    ax.set_title("Draw a rectangle (click and drag)")
-
-    # Rectangle selector
-    rect_selector = RectangleSelector(
-        ax,
-        onselect,
-        useblit=True,
-        button=[1],  # Only left mouse button
-        minspanx=5,
-        minspany=5,
-        spancoords="pixels",
-        interactive=True,
-    )
-
-    plt.show()
-
-    # Apply scaling to the coordinates
-    x0, x1 = sorted([rect_coords[0], rect_coords[2]])
-    top, bottom = sorted([rect_coords[1], rect_coords[3]])
-
-    # Create a bounding box
-    bbox = (x0, top, x1, bottom)
-
-    return bbox
-
-
-def display_bbox(image, bbox, display_resolution=100, show=True):
-    """
-    Display a bounding box on the image.
-
-    Args:
-    image (numpy.ndarray): The image to be displayed.
-    bbox (list): The bounding box coordinates in the format [x1, y1, x2, y2].
-    display_resolution (int, optional): The display resolution of the image. Defaults to 100.
-    """
-    # Create a figure and axis
-    fig, ax = plt.subplots(figsize=(15, 10))
-
-    # Display the image
-    dpi = display_resolution
-    extent = (0, image.width, image.height, 0)
-    ax.imshow(image.original, cmap="gray", extent=extent)
-
-    # Add the bounding box to the image
-    rect = plt.Rectangle(
-        (bbox[0], bbox[1]),
-        bbox[2] - bbox[0],
-        bbox[3] - bbox[1],
-        edgecolor="r",
-        facecolor="none",
-    )
-    ax.add_patch(rect)
-
-    if show:
-        plt.show()
-    else:
-        return fig, ax
-
 
 def expand_dataframe_with_metadata(df_lines, patterns):
     """
@@ -289,6 +320,7 @@ def apply_column_filters(df, column_filters):
 
     return df_filtered
 
+
 def extract_fixed_text_areas(page, areas):
 
     # Initialize a dictionary to store text extracted from the current page
@@ -302,6 +334,7 @@ def extract_fixed_text_areas(page, areas):
         page_text[area_name] = area_text
 
     return page_text
+
 
 def extract_data_from_pdf(config_path, pdf_path, output_dir="output", write_overly=False, log_file_path=None):
     """
@@ -330,7 +363,7 @@ def extract_data_from_pdf(config_path, pdf_path, output_dir="output", write_over
     # Set bounding box and add left and right margins from the bounding box to the column locations
     bbox = config["table_area"]
     
-        # Define the table settings
+    # Define the table settings
     table_settings = {
         "vertical_strategy": "explicit",
         "explicit_vertical_lines": [bbox[0]] + config['table_columns'] + [bbox[2]],
@@ -448,7 +481,63 @@ def extract_data_from_pdf(config_path, pdf_path, output_dir="output", write_over
         df_pages.to_excel(writer, sheet_name='Pages', index=False)
     
     # Combine the tables and headers in a list and write to a Pickle file
-    pd.to_pickle([df_tables, df_headers, df_pages], output_basepath + "_normalized.pkl")   
+    pd.to_pickle([df_tables, df_headers, df_fixed, df_pages], output_basepath + "_normalized.pkl")   
     
     logging.info("Extraction completed.")
     return df_cleaned, df_tables, df_headers
+
+
+def select_rectangle(image, display_resolution=100):
+    """
+    Allows the user to draw a rectangle on the image using a RectangleSelector.
+
+    Args:
+    image (numpy.ndarray): The image to be displayed.
+    display_resolution (int, optional): The display resolution of the image. Defaults to 100.
+
+    Returns:
+    list: A list containing the coordinates of the drawn rectangle in the format [x1, y1, x2, y2].
+    """
+    # Global variable to store rectangle coordinates
+    rect_coords = None
+
+    # Function to handle the rectangle selection event
+    def onselect(eclick, erelease):
+        nonlocal rect_coords
+        # Correctly capture the coordinates respecting the order
+        x1, y1 = int(eclick.xdata), int(eclick.ydata)
+        x2, y2 = int(erelease.xdata), int(erelease.ydata)
+        rect_coords = [x1, y1, x2, y2]
+        print(f"Rectangle from ({x1}, {y1}) to ({x2}, {y2})")
+
+    # Create a figure and axis
+    fig, ax = plt.subplots(figsize=(15, 10))
+
+    # Display the image
+    dpi = display_resolution
+    extent = (0, image.width, image.height, 0)
+    ax.imshow(image, cmap="gray", extent=extent)
+    ax.set_title("Draw a rectangle (click and drag)")
+
+    # Rectangle selector
+    rect_selector = RectangleSelector(
+        ax,
+        onselect,
+        useblit=True,
+        button=[1],  # Only left mouse button
+        minspanx=5,
+        minspany=5,
+        spancoords="pixels",
+        interactive=True,
+    )
+
+    plt.show()
+
+    # Apply scaling to the coordinates
+    x0, x1 = sorted([rect_coords[0], rect_coords[2]])
+    top, bottom = sorted([rect_coords[1], rect_coords[3]])
+
+    # Create a bounding box
+    bbox = (x0, top, x1, bottom)
+
+    return bbox

@@ -76,7 +76,8 @@ def normalize_crosstab(
     flattened_df = body.join(headers.set_index('column_index'), on='column_index')
     flattened_df = flattened_df.drop(columns=['column_index'])
     flattened_df = flattened_df.pivot_table(index=flattened_df.columns.drop(['value', 'variable']).tolist(),
-                                            columns='variable', values='value', aggfunc='first').reset_index()
-    flattened_df = flattened_df.sort_values(by='seq').drop(columns=['seq']).reset_index(drop=True)
+                                            columns='variable', values='value', aggfunc='first', sort=False).reset_index()
+    flattened_df = flattened_df.drop(columns=['seq']).reset_index(drop=True)
+    # flattened_df = flattened_df.sort_values(by='seq').drop(columns=['seq']).reset_index(drop=True)
 
     return flattened_df

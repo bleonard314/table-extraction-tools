@@ -6,7 +6,6 @@ from pathlib import Path
 from matplotlib.widgets import RectangleSelector
 import pandas as pd
 import yaml
-import inflection
 import os
 import logging
 
@@ -221,19 +220,30 @@ class PDFExtractionConfig:
         return(metadata_patterns)
     
     @staticmethod
-    def fixed_text_areas_from_lines(page, line_numbers):
+    def fixed_text_areas_from_lines(page, line_numbers, key_separator=":", key_line_numbers=None, expand=[0,0,0,0]):
         page_lines = page.extract_text_lines()
-        fixed_lines = page_lines[line_numbers]
+        fixed_lines = [page_lines[line_number] for line_number in line_numbers]
+        if key_line_numbers:
+            key_lines = [page_lines[line_number] for line_number in key_line_numbers]
+        else:
+            key_lines = None
         fixed_text_areas = {}
 
-        for line in fixed_lines:
-            page_cropped = page.crop(list(line.values())[1:5])
-            line_words = page_cropped.extract_words(keep_blank_chars=True)
-            for word in line_words:
+        for line_idx, line in enumerate(fixed_lines):
+            line_words = page.crop(list(line.values())[1:5]).extract_words(keep_blank_chars=True)
+            if key_lines:
+                key_words = page.crop(list(key_lines[line_idx].values())[1:5]).extract_words(keep_blank_chars=True)
+            else:
+                key_words = None
+            for word_idx, word in enumerate(line_words):
                 text = word['text']
-                area = [word['x0'], word['top'], word['x1'], word['bottom']]
-                # Extract the first part of the text before any colon or space
-                key = text.split(':')[0].split(' ')[0]
+                area = [word['x0'], line['top'], word['x1'], line['bottom']]
+                if expand:
+                    area = [coord + expand[idx] for idx, coord in enumerate(area)]
+                if key_separator:
+                    key = text.split(key_separator)[0].strip()
+                elif key_words:
+                    key = key_words[word_idx]['text']
                 fixed_text_areas[key] = [int(coord) for coord in area]
         return(fixed_text_areas)
 
@@ -247,6 +257,9 @@ class PDFExtraction:
         self.tables_df = pd.DataFrame()
         self.metadata_df = pd.DataFrame()
         self.fixed_df = pd.DataFrame()
+        
+        # Optional property for horizontal lines
+        self.horizontal_lines = None
     
     @staticmethod
     def _validate_path(path):
@@ -334,6 +347,57 @@ class PDFExtraction:
                 if self._find_keyword_text(text, keywords_keep, keywords_remove, require_all):
                     self.pages_of_interest.append(page_num + 1)  # Adjust to 1-based index
     
+    @staticmethod
+    def get_bookmark_pages(pdf_path: str, target_title: str):
+        """
+        Extract page numbers for a specific bookmark section in a PDF using PyMuPDF.
+        
+        Args:
+            pdf_path (str): Path to the PDF file
+            target_title (str): Title of the bookmark section to find
+            
+        Returns:
+            List[int]: List of page numbers (1-based) associated with the bookmark section
+        """
+        doc = fitz.open(pdf_path)
+        toc = doc.get_toc()  # Get table of contents (bookmarks)
+        
+        # Find our target bookmark
+        target_level = None
+        target_index = None
+        
+        for i, (level, title, page) in enumerate(toc):
+            if title == target_title:
+                target_level = level
+                target_index = i
+                break
+        
+        if target_index is None:
+            doc.close()
+            return []
+        
+        # Get starting page
+        start_page = toc[target_index][2]  # Page number is third element
+        
+        # Find the end page by looking for the next bookmark at same or higher level
+        end_page = None
+        for level, _, page in toc[target_index + 1:]:
+            if level <= target_level:
+                end_page = page - 1  # Subtract 1 since next section starts here
+                break
+        
+        # If no end page found (last bookmark in its section)
+        if end_page is None:
+            if target_index + 1 < len(toc):
+                # Use next bookmark's page as end
+                end_page = toc[target_index + 1][2] - 1
+            else:
+                # For last bookmark, just use its starting page
+                end_page = start_page
+        
+        doc.close()
+        return list(range(start_page, end_page + 1))
+    
     def subset_pdf(self):
         """
         Subset a PDF to only contain the specified pages.
@@ -376,10 +440,15 @@ class PDFExtraction:
             "snap_y_tolerance": 5,
             "intersection_x_tolerance": 999,
         }
-
+        
+        # If horizontal lines are provided, add them to the settings
+        if self.horizontal_lines:
+            table_settings["horizontal_strategy"] = "explicit"
+            table_settings["explicit_horizontal_lines"] = self.horizontal_lines
+            
         line_settings = table_settings.copy()
         line_settings["explicit_vertical_lines"] = [bbox[0]] + [bbox[2]]
-
+        
         return table_settings, line_settings
         
     @staticmethod
@@ -409,7 +478,7 @@ class PDFExtraction:
                     ]
                 )
 
-        return df_metadata.reset_index()
+        return df_metadata
 
     @staticmethod
     def apply_column_filters(df, column_filters):
@@ -449,8 +518,45 @@ class PDFExtraction:
             page_text[area_name] = area_text
 
         return page_text
+    
+    def draw_extraction_config(self, page):
+        import re
+        page_image = page.to_image()
+        
+        # Draw table area
+        page_image.draw_rect(self.config.table_area, stroke='red', stroke_width=2)
+        
+        # Draw table columns
+        for idx, x_pos in enumerate(self.config.table_columns):
+            page_image.draw_line(((x_pos, 0), (x_pos, page.height)), stroke='blue')
+        
+        # Draw metadata patterns
+        for pattern in self.config.metadata_patterns:
+            # Get page lines
+            page_lines = page.extract_text_lines()
+            for line in page_lines:
+                # Use the regular expression pattern to match text
+                match = re.search(pattern["pattern"], line["text"])
+                if match:
+                    for idx, group in enumerate(match.groups()[1:], start = 1):
+                        # Determine the number of whitespace characters before the matched pattern
+                        start_pos = len(line["text"][0:match.start(idx)].replace(" ", ""))
+                        end_pos = len(line["text"][0:match.end(idx)].replace(" ", ""))-1
+                        
+                        # Draw a rectangle around the matched text
+                        bbox = [line["chars"][start_pos]['x0'], line['top'], line["chars"][end_pos]['x1'], line['bottom']]
+                        page_image.draw_rect(bbox, stroke='green', stroke_width=2)
+                    
+                    
+        # Draw fixed text areas
+        for area_name, bbox in self.config.fixed_text_areas.items():
+            page_image.draw_rect(bbox, stroke='purple', stroke_width=2)
+            # Add text label
+            # page_image.draw_text(bbox[:2], area_name, fontsize=12, color='black')
+        
+        return page_image
 
-    def extract_data_from_pdf(self, output_path=None, log_file_path=None):
+    def extract_data_from_pdf(self, output_path=None, log_file_path=None, draw_image_path=None, crop_meta=True):
         """
         Extract data from a PDF file based on the specified configuration.
 
@@ -496,17 +602,24 @@ class PDFExtraction:
                 self.tables_df = pd.concat([self.tables_df, table_df], ignore_index=True)
                 
                 # Extract text line by line from the cropped page and extract metadata using patterns from the config file
-                extracted_lines = page_cropped.extract_table(line_settings)
+                if crop_meta:
+                    extracted_lines = page_cropped.extract_table(line_settings)
+                else:
+                    extracted_lines = page.extract_table(line_settings)
                 lines_df = pd.DataFrame(extracted_lines, columns=['text']) # Convert to dataframe
                 meta_df = self.extract_metadata_patterns(lines_df, self.config.metadata_patterns)
                 meta_df.insert(0, 'Page Number', page_num) # Add page number as first column of dataframe
                 self.metadata_df = pd.concat([self.metadata_df, meta_df], ignore_index=True) # Concatenate metadata dataframe
                 
-                # Extract fixed position text from the cropped page
+                # Extract fixed position text from the page
                 extracted_text = self.extract_fixed_text_areas(page, self.config.fixed_text_areas)
                 text_df = pd.DataFrame(extracted_text, index=[0])
                 text_df.insert(0, 'Page Number', page_num) # Add page number as first column of dataframe
                 self.fixed_df = pd.concat([self.fixed_df, text_df], ignore_index=True) # Concatenate fixed text dataframe
+                
+                if draw_image_path:
+                    page_image = self.draw_extraction_config(page)
+                    page_image.save(draw_image_path.replace(".pdf", f"_page_{page_num}.png"))
         
         logging.info("Extraction completed.")
 

@@ -1,0 +1,84 @@
+page_selection:
+  explicit_pages: null
+  require_all_keywords: false
+  keywords_to_keep:
+  - Analytical Report
+  keywords_to_remove:
+  - Certificate of Analysis
+  - Project Manager
+table_area:
+- 18
+- 14
+- 594
+- 778
+table_columns:
+- 235
+- 322
+- 378
+- 439
+- 482
+- 566
+table_column_names:
+- Analyte Name
+- Result
+- MRL
+- MDL
+- Dil.
+- Date Analyzed
+- Q
+metadata_patterns:
+- pattern: 'Client: (.*?) Service Request: (.*)'
+  columns:
+  - Client
+  - Service Request
+  fill_direction: down
+- pattern: 'Project: (.*?) Date Collected: (.*)'
+  columns:
+  - Project
+  - Date Collected
+  fill_direction: down
+- pattern: 'Sample Matrix: (.*?) Date Received: (.*)'
+  columns:
+  - Sample Matrix
+  - Date Received
+  fill_direction: down
+- pattern: 'Sample Name: (.*?) Units: (.*)'
+  columns:
+  - Sample Name
+  - Units
+  fill_direction: down
+- pattern: 'Lab Code: (.*?) Basis: (.*)'
+  columns:
+  - Lab Code
+  - Basis
+  fill_direction: down
+- pattern: 'Analysis Method: (.*)'
+  columns:
+  - Analysis Method
+  fill_direction: down
+- pattern: 'Prep Method: (.*)'
+  columns:
+  - Prep Method
+  fill_direction: down
+fixed_text_areas:
+  Printed:
+  - 18
+  - 741
+  - 118
+  - 749
+  Superset:
+  - 423
+  - 741
+  - 559
+  - 749
+  Page:
+  - 268
+  - 767
+  - 323
+  - 777
+post_processing:
+  column_filters:
+  - column: MRL
+    regex: ^[0-9]+(\.[0-9]+)?$
+  - column: MDL
+    regex: ^[0-9]+(\.[0-9]+)?$

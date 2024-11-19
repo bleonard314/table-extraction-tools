@@ -2,12 +2,11 @@
 
 # Page selection options
 page_selection:
-  explicit_pages: null  # List specific page numbers to include, or set to null to use keyword-based selection
-  require_all_keywords: false  # If true, all keywords must be present on a page to include it in the extraction
   keywords_to_keep:  # List of keywords that a page must contain to be included in the extraction
     - "Client Sample Results"
   keywords_to_remove:  # List of keywords that, if present on a page, exclude it from the extraction
     - "Table of Contents"
+  require_all_keywords: false  # If true, all keywords must be present on a page to include it in the extraction
 
 # Bounding box for the data table to specify where to extract tabular data
 table_area:

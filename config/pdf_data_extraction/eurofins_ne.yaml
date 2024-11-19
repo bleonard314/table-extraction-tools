@@ -1,0 +1,77 @@
+page_selection:
+  explicit_pages: null
+  require_all_keywords: false
+  keywords_to_keep: []
+  keywords_to_remove: []
+table_area:
+- 13
+- 90
+- 597
+- 743
+table_columns:
+- 53
+- 149
+- 204
+- 234
+- 270
+- 307
+- 338
+- 378
+- 432
+- 473
+- 510
+- 542
+- 570
+table_column_names:
+- CAS No.
+- Analyte(s)
+- Result
+- Flag
+- Units
+- '*RDL'
+- MDL
+- Dilution
+- Method Ref.
+- Prepared
+- Analyzed
+- Analyst
+- Batch
+- Cert.
+metadata_patterns:
+- pattern: (SC\d{5}-\d{2})
+  columns:
+  - Lab Sample ID
+  fill_direction: down
+fixed_text_areas:
+  'Client Project #':
+  - 237
+  - 48
+  - 304
+  - 63
+  Matrix:
+  - 345
+  - 48
+  - 380
+  - 63
+  Collection Date/Time:
+  - 414
+  - 48
+  - 495
+  - 63
+  Received:
+  - 517
+  - 48
+  - 575
+  - 63
+  Sample Identification:
+  - 8
+  - 41
+  - 111
+  - 56
+post_processing:
+  explicit_line_numbers: null
+  column_filters:
+  - column: Units
+    regex: '[^ ]+'
+  convert_column_names: false
+  convert_data_types: true

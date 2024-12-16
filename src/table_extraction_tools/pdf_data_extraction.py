@@ -8,6 +8,95 @@ import pandas as pd
 import yaml
 import os
 import logging
+import re
+from enum import Enum, auto
+from typing import List, Optional, Union, Dict
+import numpy as np
+from PIL import Image
+
+class PageSelectionMethod(Enum):
+    """Enum for different page selection methods"""
+    ALL_PAGES = auto()
+    EXPLICIT_PAGES = auto()
+    KEYWORD_BASED = auto()
+    BOOKMARK_BASED = auto()
+
+class PageSelection:
+    """Class to handle different methods of PDF page selection"""
+    def __init__(
+        self,
+        method: PageSelectionMethod = PageSelectionMethod.ALL_PAGES,
+        explicit_pages: Optional[List[int]] = None,
+        keywords_to_keep: Optional[List[str]] = None,
+        keywords_to_remove: Optional[List[str]] = None,
+        require_all_keywords: bool = False,
+        bookmark_title: Optional[str] = None
+    ):
+        self.method = method
+        self.explicit_pages = explicit_pages or []
+        self.keywords_to_keep = keywords_to_keep or []
+        self.keywords_to_remove = keywords_to_remove or []
+        self.require_all_keywords = require_all_keywords
+        self.bookmark_title = bookmark_title
+
+    @classmethod
+    def all_pages(cls) -> 'PageSelection':
+        """Create a PageSelection instance for processing all pages"""
+        return cls(method=PageSelectionMethod.ALL_PAGES)
+
+    @classmethod
+    def explicit_pages(cls, pages: List[int]) -> 'PageSelection':
+        """Create a PageSelection instance for explicitly listed pages"""
+        return cls(
+            method=PageSelectionMethod.EXPLICIT_PAGES,
+            explicit_pages=pages
+        )
+
+    @classmethod
+    def keyword_based(
+        cls,
+        keywords_to_keep: List[str],
+        keywords_to_remove: Optional[List[str]] = None,
+        require_all_keywords: bool = False
+    ) -> 'PageSelection':
+        """Create a PageSelection instance for keyword-based selection"""
+        return cls(
+            method=PageSelectionMethod.KEYWORD_BASED,
+            keywords_to_keep=keywords_to_keep,
+            keywords_to_remove=keywords_to_remove,
+            require_all_keywords=require_all_keywords
+        )
+
+    @classmethod
+    def bookmark_based(cls, bookmark_title: str) -> 'PageSelection':
+        """Create a PageSelection instance for bookmark-based selection"""
+        return cls(
+            method=PageSelectionMethod.BOOKMARK_BASED,
+            bookmark_title=bookmark_title
+        )
+
+    def to_dict(self) -> Dict:
+        """Convert the PageSelection instance to a dictionary for YAML storage"""
+        return {
+            "method": self.method.name,
+            "explicit_pages": self.explicit_pages,
+            "keywords_to_keep": self.keywords_to_keep,
+            "keywords_to_remove": self.keywords_to_remove,
+            "require_all_keywords": self.require_all_keywords,
+            "bookmark_title": self.bookmark_title
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict) -> 'PageSelection':
+        """Create a PageSelection instance from a dictionary"""
+        return cls(
+            method=PageSelectionMethod[data.get("method", "ALL_PAGES")],
+            explicit_pages=data.get("explicit_pages"),
+            keywords_to_keep=data.get("keywords_to_keep"),
+            keywords_to_remove=data.get("keywords_to_remove"),
+            require_all_keywords=data.get("require_all_keywords", False),
+            bookmark_title=data.get("bookmark_title")
+        )
 
 class PDFExtractionConfig:
     def __init__(self, config_path=None):
@@ -25,10 +114,12 @@ class PDFExtractionConfig:
         """Generate a blank configuration with default structure."""
         return {
             "page_selection": {
+                "method": "ALL_PAGES",
                 "explicit_pages": None,
-                "require_all_keywords": False,
                 "keywords_to_keep": [],
-                "keywords_to_remove": []
+                "keywords_to_remove": [],
+                "require_all_keywords": False,
+                "bookmark_title": None
             },
             "table_area": [0, 0, 0, 0],
             "table_columns": [],
@@ -57,9 +148,14 @@ class PDFExtractionConfig:
         return self._page_selection
 
     @page_selection.setter
-    def page_selection(self, value):
-        self._page_selection = value
-        self.config['page_selection'] = value
+    def page_selection(self, value: Union[PageSelection, Dict]):
+        if isinstance(value, dict):
+            self._page_selection = PageSelection.from_dict(value)
+        elif isinstance(value, PageSelection):
+            self._page_selection = value
+        else:
+            raise ValueError("page_selection must be either a PageSelection instance or a dictionary")
+        self.config['page_selection'] = self._page_selection.to_dict()
 
     @property
     def table_area(self):
@@ -189,25 +285,62 @@ class PDFExtractionConfig:
 
         return bbox
     
-    @staticmethod
-    def metadata_patterns_from_lines(page, line_numbers, terminator_text=":", fill_direction="down"):
+    def metadata_patterns_from_lines(self, page, line_numbers: List[int], terminator_text: str = ":", fill_direction: str = "down") -> List[Dict]:
+        """
+        Create metadata extraction patterns from specific lines in a PDF page.
+        
+        Args:
+            page (pdfplumber.page.Page): The PDF page to extract patterns from
+            line_numbers (List[int]): List of line numbers (1-based) to extract patterns from
+            terminator_text (str, optional): Text that terminates a metadata field name. Defaults to ":"
+            fill_direction (str, optional): Direction to fill extracted values. Defaults to "down"
+            
+        Returns:
+            List[Dict]: List of metadata patterns, each containing:
+                - pattern: Regular expression pattern for extracting metadata
+                - columns: List of column names extracted from the lines
+                - fill_direction: Direction to fill the extracted values
+                
+        Raises:
+            ValueError: If line numbers are invalid or no lines are found in the page
+        """
         page_lines = page.extract_text_lines()
-        header_lines = page_lines[line_numbers]
+        
+        # Validate line numbers
+        if not line_numbers:
+            raise ValueError("No line numbers provided")
+        if not all(isinstance(n, int) for n in line_numbers):
+            raise ValueError("All line numbers must be integers")
+        if max(line_numbers) > len(page_lines):
+            raise ValueError(f"Line number {max(line_numbers)} exceeds number of lines in page ({len(page_lines)})")
+        if min(line_numbers) < 1:
+            raise ValueError("Line numbers must be 1-based (minimum value is 1)")
+        
+        # Convert to 0-based indexing and get specified lines
+        header_lines = [page_lines[n - 1] for n in line_numbers]
         metadata_patterns = []
 
         for line in header_lines:
+            # Extract the bounding box coordinates from the line
+            bbox = [line['x0'], line['top'], line['x1'], line['bottom']]
+            page_cropped = page.crop(bbox)
+            line_words = page_cropped.extract_words(keep_blank_chars=True, x_tolerance_ratio=0.3) # x_tolerance = 2 also works for Pace
+            
             column_names = []
-            page_cropped = page.crop(list(line.values())[1:5])
-            line_words = page_cropped.extract_words(keep_blank_chars=True)
             pattern_parts = []
+            
             for idx, word in enumerate(line_words):
-                text = word['text']
+                text = word['text'].strip()
                 if text.endswith(terminator_text):
-                    if idx + 1 < len(line_words) and not line_words[idx + 1]['text'].endswith(terminator_text):
-                        pattern_parts.append(text + " (.*?)")
-                    else:
-                        pattern_parts.append(text + " (.*)")
-                    column_names.append(text[:-1])  # Remove the trailing terminator_text
+                    # Determine if this is the last metadata field in the line
+                    is_last_field = idx + 2 == len(line_words)
+                    
+                    # Use non-greedy match (?.*?) for middle fields, greedy match (.*) for last field
+                    pattern_part = text + " (.*)" if is_last_field else text + " (.*?)"
+                    pattern_parts.append(pattern_part)
+                    
+                    # Store column name without terminator
+                    column_names.append(text[:-len(terminator_text)].strip())
             
             if pattern_parts:
                 pattern = " ".join(pattern_parts)
@@ -217,35 +350,179 @@ class PDFExtractionConfig:
                     "fill_direction": fill_direction
                 })
         
-        return(metadata_patterns)
+        self.metadata_patterns = metadata_patterns
     
-    @staticmethod
-    def fixed_text_areas_from_lines(page, line_numbers, key_separator=":", key_line_numbers=None, expand=[0,0,0,0]):
+    def fixed_text_areas_from_lines(
+        self,
+        page,
+        line_numbers: List[int],
+        key_separator: Optional[str] = ":",
+        key_line_numbers: Optional[List[int]] = None,
+        expand: List[float] = [0, 0, 0, 0]
+    ) -> None:
+        """
+        Create fixed text areas configuration from specific lines in a PDF page.
+        
+        Args:
+            page (pdfplumber.page.Page): The PDF page to extract areas from
+            line_numbers (List[int]): List of line numbers (1-based) containing the text areas
+            key_separator (str, optional): Separator to split text into key/value. Defaults to ":"
+            key_line_numbers (List[int], optional): List of line numbers containing keys. 
+                Must be same length as line_numbers if provided.
+            expand (List[float], optional): Amount to expand boundaries [left, top, right, bottom].
+                Defaults to [0, 0, 0, 0]
+                
+        Raises:
+            ValueError: If line numbers are invalid or expansion values are incorrect
+        """
+        # Validate inputs
+        if not line_numbers:
+            raise ValueError("No line numbers provided")
+        if not all(isinstance(n, int) for n in line_numbers):
+            raise ValueError("All line numbers must be integers")
+        if len(expand) != 4:
+            raise ValueError("Expand must be a list of 4 values [left, top, right, bottom]")
+        
         page_lines = page.extract_text_lines()
-        fixed_lines = [page_lines[line_number] for line_number in line_numbers]
+        
+        # Validate line numbers against page content
+        if max(line_numbers) > len(page_lines):
+            raise ValueError(f"Line number {max(line_numbers)} exceeds number of lines in page ({len(page_lines)})")
+        if min(line_numbers) < 1:
+            raise ValueError("Line numbers must be 1-based (minimum value is 1)")
+        
+        # Validate key line numbers if provided
         if key_line_numbers:
-            key_lines = [page_lines[line_number] for line_number in key_line_numbers]
-        else:
-            key_lines = None
+            if len(key_line_numbers) != len(line_numbers):
+                raise ValueError("key_line_numbers must have same length as line_numbers")
+            if max(key_line_numbers) > len(page_lines):
+                raise ValueError("Invalid key line number")
+            if min(key_line_numbers) < 1:
+                raise ValueError("Key line numbers must be 1-based")
+        
+        # Convert to 0-based indexing
+        fixed_lines = [page_lines[n - 1] for n in line_numbers]
+        key_lines = [page_lines[n - 1] for n in key_line_numbers] if key_line_numbers else None
+        
         fixed_text_areas = {}
-
+        
         for line_idx, line in enumerate(fixed_lines):
-            line_words = page.crop(list(line.values())[1:5]).extract_words(keep_blank_chars=True)
+            # Get bbox for current line
+            line_bbox = [line['x0'], line['top'], line['x1'], line['bottom']]
+            line_words = page.crop(line_bbox).extract_words(keep_blank_chars=True)
+            
             if key_lines:
-                key_words = page.crop(list(key_lines[line_idx].values())[1:5]).extract_words(keep_blank_chars=True)
+                key_bbox = [key_lines[line_idx]['x0'], key_lines[line_idx]['top'], 
+                        key_lines[line_idx]['x1'], key_lines[line_idx]['bottom']]
+                key_words = page.crop(key_bbox).extract_words(keep_blank_chars=True)
             else:
                 key_words = None
+                
             for word_idx, word in enumerate(line_words):
-                text = word['text']
-                area = [word['x0'], line['top'], word['x1'], line['bottom']]
-                if expand:
-                    area = [coord + expand[idx] for idx, coord in enumerate(area)]
-                if key_separator:
+                text = word['text'].strip()
+                # Create area with word boundaries
+                area = [
+                    word['x0'] - expand[0],  # Expand left
+                    line['top'] - expand[1],  # Expand top
+                    word['x1'] + expand[2],  # Expand right
+                    line['bottom'] + expand[3]  # Expand bottom
+                ]
+                
+                # Determine key for the area
+                if key_separator and key_separator in text:
                     key = text.split(key_separator)[0].strip()
-                elif key_words:
-                    key = key_words[word_idx]['text']
+                elif key_words and word_idx < len(key_words):
+                    key = key_words[word_idx]['text'].strip()
+                else:
+                    key = text
+                    
                 fixed_text_areas[key] = [int(coord) for coord in area]
-        return(fixed_text_areas)
+        
+        # Update configuration
+        self.fixed_text_areas = fixed_text_areas
+
+    def expand_fixed_text_area(
+        self,
+        key: str,
+        expand: List[float]
+    ) -> None:
+        """
+        Expand the boundaries of a specific fixed text area in the configuration.
+        
+        Args:
+            key (str): The key of the fixed text area to expand
+            expand (List[float]): Amount to expand boundaries [left, top, right, bottom]
+                Positive values expand the area, negative values contract it
+                
+        Raises:
+            ValueError: If key not found or expansion values are incorrect
+            KeyError: If the specified key doesn't exist in fixed_text_areas
+        """
+        if len(expand) != 4:
+            raise ValueError("Expand must be a list of 4 values [left, top, right, bottom]")
+        
+        if key not in self.fixed_text_areas:
+            raise KeyError(f"No fixed text area found with key: {key}")
+        
+        current_area = self.fixed_text_areas[key]
+        expanded_area = [
+            current_area[0] - expand[0],  # Expand left
+            current_area[1] - expand[1],  # Expand top
+            current_area[2] + expand[2],  # Expand right
+            current_area[3] + expand[3]   # Expand bottom
+        ]
+        
+        self.fixed_text_areas[key] = [int(coord) for coord in expanded_area]
+    
+    def remove_fixed_text_area(self, key: Union[str, int]) -> None:
+        """
+        Remove a fixed text area from the configuration.
+        
+        Args:
+            key: Either the key name (str) or the position (int, 0-based) to remove
+                
+        Raises:
+            KeyError: If string key doesn't exist
+            IndexError: If position is out of range
+            TypeError: If key is neither string nor integer
+        """
+        if isinstance(key, str):
+            # Remove by key name
+            del self.fixed_text_areas[key]
+        elif isinstance(key, int):
+            # Remove by position
+            items = list(self.fixed_text_areas.items())
+            if 0 <= key < len(items):
+                removed_key = items[key][0]
+                del self.fixed_text_areas[removed_key]
+            else:
+                raise IndexError(f"Position {key} is out of range")
+        else:
+            raise TypeError("Key must be either a string or integer")
+    
+    def rename_fixed_text_area(self, old_key: str, new_key: str) -> None:
+        """
+        Rename a key in the fixed text areas configuration.
+        
+        Args:
+            old_key (str): The current key name
+            new_key (str): The new key name to use
+                
+        Raises:
+            KeyError: If old_key doesn't exist
+            ValueError: If new_key already exists
+        """
+        if old_key not in self.fixed_text_areas:
+            raise KeyError(f"Key '{old_key}' not found in fixed text areas")
+        
+        if new_key in self.fixed_text_areas and new_key != old_key:
+            raise ValueError(f"Key '{new_key}' already exists in fixed text areas")
+        
+        # Get the value and remove the old key
+        value = self.fixed_text_areas.pop(old_key)
+        
+        # Add with new key
+        self.fixed_text_areas[new_key] = value
 
 class PDFExtraction:
     def __init__(self, pdf_path, config: PDFExtractionConfig):
@@ -261,6 +538,43 @@ class PDFExtraction:
         # Optional property for horizontal lines
         self.horizontal_lines = None
     
+    def get_pages_of_interest(self) -> List[int]:
+        """Determine pages of interest based on the configured selection method"""
+        selection = self.config.page_selection
+
+        if selection.method == PageSelectionMethod.ALL_PAGES:
+            with pdfplumber.open(self.pdf_path) as pdf:
+                self.pages_of_interest = list(range(1, len(pdf.pages) + 1))
+
+        elif selection.method == PageSelectionMethod.EXPLICIT_PAGES:
+            self.pages_of_interest = selection.explicit_pages
+
+        elif selection.method == PageSelectionMethod.KEYWORD_BASED:
+            self.find_keyword_pages()
+
+        elif selection.method == PageSelectionMethod.BOOKMARK_BASED:
+            self.find_bookmark_pages()
+
+        return self.pages_of_interest
+    
+    def get_first_page_plumber(self):
+        """
+        Get the pdfplumber Page object for the first page of interest.
+        
+        Returns:
+            pdfplumber.page.Page: The first page of interest as a pdfplumber Page object
+            
+        Raises:
+            ValueError: If no pages of interest have been determined
+        """
+            
+        if not self.pages_of_interest:
+            raise ValueError("No pages of interest found in the PDF")
+        
+        # Open PDF and return first page
+        pdf = pdfplumber.open(self.pdf_path)
+        return pdf.pages[self.pages_of_interest[0] - 1]  # Subtract 1 for 0-based indexing
+
     @staticmethod
     def _validate_path(path):
         """
@@ -347,56 +661,142 @@ class PDFExtraction:
                 if self._find_keyword_text(text, keywords_keep, keywords_remove, require_all):
                     self.pages_of_interest.append(page_num + 1)  # Adjust to 1-based index
     
-    @staticmethod
-    def get_bookmark_pages(pdf_path: str, target_title: str):
+    def find_bookmark_pages(self):
         """
-        Extract page numbers for a specific bookmark section in a PDF using PyMuPDF.
+        Find page numbers for a specific bookmark section in the PDF using PyMuPDF and
+        store them in the pages_of_interest attribute.
+        
+        The method searches for a bookmark with the title specified in the configuration's
+        page_selection.bookmark_title. It determines the range of pages that fall under
+        this bookmark by looking at the PDF's table of contents structure.
+        
+        The page range is determined by:
+        1. Finding the starting page of the bookmark
+        2. Finding the ending page (either the start of the next bookmark at the same
+        or higher level, or the last page of the document)
+        
+        Returns:
+            bool: True if bookmark was found and pages were identified, False otherwise
+        
+        Raises:
+            ValueError: If bookmark_title is not set in the configuration
+            FileNotFoundError: If the PDF file cannot be opened
+        """
+        # Verify bookmark title is set in configuration
+        bookmark_title = self.config.page_selection.bookmark_title
+        if not bookmark_title:
+            raise ValueError("Bookmark title must be set in page_selection configuration")
+        
+        try:
+            doc = fitz.open(self.pdf_path)
+        except Exception as e:
+            raise FileNotFoundError(f"Could not open PDF file: {self.pdf_path}") from e
+        
+        try:
+            toc = doc.get_toc()  # Get table of contents (bookmarks)
+            if not toc:
+                logging.warning(f"No bookmarks found in PDF: {self.pdf_path}")
+                return False
+            
+            # Find our target bookmark
+            target_level = None
+            target_index = None
+            
+            for i, (level, title, page) in enumerate(toc):
+                if title == bookmark_title:
+                    target_level = level
+                    target_index = i
+                    break
+            
+            if target_index is None:
+                logging.warning(f"Bookmark '{bookmark_title}' not found in PDF")
+                return False
+            
+            # Get starting page
+            start_page = toc[target_index][2]  # Page number is third element
+            
+            # Find the end page by looking for the next bookmark at same or higher level
+            end_page = None
+            for level, _, page in toc[target_index + 1:]:
+                if level <= target_level:
+                    end_page = page - 1  # Subtract 1 since next section starts here
+                    break
+            
+            # If no end page found (last bookmark in its section)
+            if end_page is None:
+                if target_index + 1 < len(toc):
+                    # Use next bookmark's page as end
+                    end_page = toc[target_index + 1][2] - 1
+                else:
+                    # For last bookmark, use the document's last page
+                    end_page = doc.page_count
+            
+            # Store the range of pages in pages_of_interest
+            self.pages_of_interest = list(range(start_page, end_page + 1))
+            logging.info(f"Found {len(self.pages_of_interest)} pages under bookmark '{bookmark_title}'")
+            return True
+            
+        finally:
+            doc.close()
+    
+    def create_overlay_visualization(self, output_path: Optional[str] = None, alpha: float = 0.3):
+        """
+        Create an overlay visualization of pages of interest to identify consistent areas.
         
         Args:
-            pdf_path (str): Path to the PDF file
-            target_title (str): Title of the bookmark section to find
-            
+            output_path (str, optional): Path to save the output visualization. If None, 
+                the visualization will only be returned as an image object.
+            alpha (float, optional): Transparency level for each page. Defaults to 0.3
+        
         Returns:
-            List[int]: List of page numbers (1-based) associated with the bookmark section
+            PIL.Image: The final overlaid image
+        
+        Raises:
+            ValueError: If no pages of interest have been determined
         """
-        doc = fitz.open(pdf_path)
-        toc = doc.get_toc()  # Get table of contents (bookmarks)
-        
-        # Find our target bookmark
-        target_level = None
-        target_index = None
-        
-        for i, (level, title, page) in enumerate(toc):
-            if title == target_title:
-                target_level = level
-                target_index = i
-                break
-        
-        if target_index is None:
-            doc.close()
-            return []
-        
-        # Get starting page
-        start_page = toc[target_index][2]  # Page number is third element
-        
-        # Find the end page by looking for the next bookmark at same or higher level
-        end_page = None
-        for level, _, page in toc[target_index + 1:]:
-            if level <= target_level:
-                end_page = page - 1  # Subtract 1 since next section starts here
-                break
-        
-        # If no end page found (last bookmark in its section)
-        if end_page is None:
-            if target_index + 1 < len(toc):
-                # Use next bookmark's page as end
-                end_page = toc[target_index + 1][2] - 1
-            else:
-                # For last bookmark, just use its starting page
-                end_page = start_page
-        
-        doc.close()
-        return list(range(start_page, end_page + 1))
+        if not self.pages_of_interest:
+            raise ValueError("No pages of interest found in the PDF")
+                
+        # Open the PDF with pdfplumber
+        with pdfplumber.open(self.pdf_path) as pdf:
+            # Get the first page to determine dimensions
+            first_page = pdf.pages[self.pages_of_interest[0] - 1]
+            first_image = first_page.to_image()
+            width, height = first_image.original.size
+            
+            # Create a blank white image as the base
+            base_image = Image.new('RGBA', (width, height), (255, 255, 255, 255))
+            
+            # Create a list to store all page images
+            page_images = []
+            
+            # Convert each page to an image and store
+            for page_num in self.pages_of_interest:
+                page = pdf.pages[page_num - 1]
+                page_image = page.to_image()
+                # Convert to RGBA to allow transparency
+                rgba_image = page_image.original.convert('RGBA')
+                page_images.append(rgba_image)
+                
+            # Overlay all images with transparency
+            for img in page_images:
+                # Create a new image with transparency
+                transparent = Image.new('RGBA', base_image.size, (0, 0, 0, 0))
+                transparent.paste(img, (0, 0))
+                
+                # Adjust alpha for this layer
+                data = np.array(transparent)
+                data[..., 3] = (data[..., 3] * alpha).astype(np.uint8)
+                transparent = Image.fromarray(data)
+                
+                # Composite the image onto the base
+                base_image = Image.alpha_composite(base_image, transparent)
+            
+            # Save the image if output path is provided
+            if output_path:
+                base_image.save(output_path)
+                
+            return base_image
     
     def subset_pdf(self):
         """
@@ -520,7 +920,6 @@ class PDFExtraction:
         return page_text
     
     def draw_extraction_config(self, page):
-        import re
         page_image = page.to_image()
         
         # Draw table area
@@ -538,10 +937,11 @@ class PDFExtraction:
                 # Use the regular expression pattern to match text
                 match = re.search(pattern["pattern"], line["text"])
                 if match:
-                    for idx, group in enumerate(match.groups()[1:], start = 1):
+                    # for idx, group in enumerate(match.groups()[1:], start = 1):
+                    for idx, reg in enumerate(match.regs[1:]):
                         # Determine the number of whitespace characters before the matched pattern
-                        start_pos = len(line["text"][0:match.start(idx)].replace(" ", ""))
-                        end_pos = len(line["text"][0:match.end(idx)].replace(" ", ""))-1
+                        start_pos = len(line["text"][0:reg[0]].replace(" ", ""))
+                        end_pos = len(line["text"][0:reg[1]].replace(" ", ""))-1
                         
                         # Draw a rectangle around the matched text
                         bbox = [line["chars"][start_pos]['x0'], line['top'], line["chars"][end_pos]['x1'], line['bottom']]
@@ -556,14 +956,17 @@ class PDFExtraction:
         
         return page_image
 
-    def extract_data_from_pdf(self, output_path=None, log_file_path=None, draw_image_path=None, crop_meta=True):
+    def extract_data_from_pdf(self, output_path=None, log_file_path=None, draw_image_path=None, crop_meta=True, create_subset=False):
         """
         Extract data from a PDF file based on the specified configuration.
 
         Args:
-        output_dir (str, optional): Output directory for saving extracted data.
-        log_file_path (str, optional): Path to save the extraction log file. Defaults to None.
-        """        
+            output_path (str, optional): Output directory for saving extracted data.
+            log_file_path (str, optional): Path to save the extraction log file.
+            draw_image_path (str, optional): Path to save diagnostic visualization images.
+            crop_meta (bool, optional): Whether to crop page when extracting metadata. Defaults to True.
+            create_subset (bool, optional): Whether to create a subset PDF with pages of interest. Defaults to False.
+        """
         # Set output path if not provided and create output directory if it doesn't exist
         if not output_path:
             output_path = self.pdf_path.parent
@@ -581,45 +984,61 @@ class PDFExtraction:
         table_settings, line_settings = self._get_table_settings()
         
         if not self.pages_of_interest:
-            self.find_keyword_pages() # Find pages with keywords
-        if not self.subset_path:
-            self.subset_path = os.path.join(output_path, os.path.basename(self.pdf_path).replace(".pdf", "_subset.pdf"))
-            self.subset_pdf() # Subset PDF with pages of interest
+            self.pages_of_interest = self.get_pages_of_interest()
 
-        with pdfplumber.open(self.subset_path) as pdf:
-            total_pages = len(pdf.pages)
-            for page_num, page in enumerate(pdf.pages, start=1):
-                logging.info(f"Processing page {page_num}/{total_pages}...")
+        # Create subset PDF if requested
+        if create_subset:
+            if not self.subset_path and output_path:
+                self.subset_path = os.path.join(output_path, os.path.basename(self.pdf_path).replace(".pdf", "_subset.pdf"))
+            elif not self.subset_path:
+                raise ValueError("Output path must be provided when create_subset is True")
+            self.subset_pdf()
+            pdf_to_process = self.subset_path
+        else:
+            pdf_to_process = self.pdf_path
+
+        with pdfplumber.open(pdf_to_process) as pdf:
+            # If using original PDF, we need to process specific pages
+            # If using subset PDF, we can process all pages sequentially
+            pages_to_process = range(len(pdf.pages)) if create_subset else [i-1 for i in self.pages_of_interest]
+            
+            for i, page_idx in enumerate(pages_to_process, start=1):
+                page = pdf.pages[page_idx]
+                logging.info(f"Processing page {i}/{len(pages_to_process)}...")
                 
-                # Extract table from cropped page and convert the extracted data to a dataframe with column names
+                # Extract table from cropped page and convert to dataframe
                 page_cropped = page.crop(self.config.table_area)
                 extracted_table = page_cropped.extract_table(table_settings)
-                table_df = pd.DataFrame(extracted_table[0:]) # Convert to dataframe
+                table_df = pd.DataFrame(extracted_table[0:])
                 table_df.columns = self.config.table_column_names
                 table_df = self.apply_column_filters(table_df, self.config.post_processing['column_filters'])
-                table_df.insert(0, 'Line Number', table_df.index+1) # Add line number (row index) as first column of dataframe
-                table_df.insert(0, 'Page Number', page_num) # Add page number as first column of dataframe
+                table_df.insert(0, 'Line Number', table_df.index+1)
+                table_df.insert(0, 'Page Number', self.pages_of_interest[i-1] if not create_subset else i)
                 self.tables_df = pd.concat([self.tables_df, table_df], ignore_index=True)
                 
-                # Extract text line by line from the cropped page and extract metadata using patterns from the config file
+                # Extract text line by line and extract metadata
                 if crop_meta:
                     extracted_lines = page_cropped.extract_table(line_settings)
                 else:
                     extracted_lines = page.extract_table(line_settings)
-                lines_df = pd.DataFrame(extracted_lines, columns=['text']) # Convert to dataframe
+                lines_df = pd.DataFrame(extracted_lines, columns=['text'])
                 meta_df = self.extract_metadata_patterns(lines_df, self.config.metadata_patterns)
-                meta_df.insert(0, 'Page Number', page_num) # Add page number as first column of dataframe
-                self.metadata_df = pd.concat([self.metadata_df, meta_df], ignore_index=True) # Concatenate metadata dataframe
+                meta_df.insert(0, 'Page Number', self.pages_of_interest[i-1] if not create_subset else i)
+                self.metadata_df = pd.concat([self.metadata_df, meta_df], ignore_index=True)
                 
-                # Extract fixed position text from the page
+                # Extract fixed position text
                 extracted_text = self.extract_fixed_text_areas(page, self.config.fixed_text_areas)
                 text_df = pd.DataFrame(extracted_text, index=[0])
-                text_df.insert(0, 'Page Number', page_num) # Add page number as first column of dataframe
-                self.fixed_df = pd.concat([self.fixed_df, text_df], ignore_index=True) # Concatenate fixed text dataframe
+                text_df.insert(0, 'Page Number', self.pages_of_interest[i-1] if not create_subset else i)
+                self.fixed_df = pd.concat([self.fixed_df, text_df], ignore_index=True)
                 
                 if draw_image_path:
                     page_image = self.draw_extraction_config(page)
-                    page_image.save(draw_image_path.replace(".pdf", f"_page_{page_num}.png"))
+                    page_image.save(draw_image_path.replace(".pdf", f"_page_{i}.png"))
+                
+                if draw_image_path:
+                    page_image = self.draw_extraction_config(page)
+                    page_image.save(draw_image_path.replace(".pdf", f"_page_{i}.png"))
         
         logging.info("Extraction completed.")
 

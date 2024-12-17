@@ -135,7 +135,7 @@ class PDFExtractionConfig:
         }
     
     def _load_config_attributes(self):
-        self._page_selection = self.config.get('page_selection', {})
+        self._page_selection = PageSelection.from_dict(self.config.get('page_selection', {}))
         self._table_area = self.config.get('table_area', [])
         self._table_columns = self.config.get('table_columns', [])
         self._table_column_names = self.config.get('table_column_names', [])
@@ -631,9 +631,9 @@ class PDFExtraction:
         Find the page numbers containing the specified keywords in a PDF and store them in the pages_of_interest attribute.
         """
         page_selection = self.config.page_selection
-        keywords_keep = page_selection.get("keywords_to_keep", [])
-        keywords_remove = page_selection.get("keywords_to_remove", [])
-        require_all = page_selection.get("require_all_keywords", False)
+        keywords_keep = page_selection.keywords_to_keep
+        keywords_remove = page_selection.keywords_to_remove
+        require_all = page_selection.require_all_keywords
         
         if use_pdfplumber:
             # Use pdfplumber (slower)

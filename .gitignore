@@ -167,3 +167,4 @@ notebooks/
 output
 .idea
 scripts/
+*.ps1

@@ -409,12 +409,12 @@ class PDFExtractionConfig:
         for line_idx, line in enumerate(fixed_lines):
             # Get bbox for current line
             line_bbox = [line['x0'], line['top'], line['x1'], line['bottom']]
-            line_words = page.crop(line_bbox).extract_words(keep_blank_chars=True)
+            line_words = page.crop(line_bbox).extract_words(keep_blank_chars=True, return_chars=True)
             
             if key_lines:
                 key_bbox = [key_lines[line_idx]['x0'], key_lines[line_idx]['top'], 
                         key_lines[line_idx]['x1'], key_lines[line_idx]['bottom']]
-                key_words = page.crop(key_bbox).extract_words(keep_blank_chars=True)
+                key_words = page.crop(key_bbox).extract_words(keep_blank_chars=True, return_chars=True)
             else:
                 key_words = None
                 
@@ -431,6 +431,8 @@ class PDFExtractionConfig:
                 # Determine key for the area
                 if key_separator and key_separator in text:
                     key = text.split(key_separator)[0].strip()
+                    key_idx = len(key.replace(" ", ""))
+                    area[0] = word["chars"][key_idx]['x0']
                 elif key_words and word_idx < len(key_words):
                     key = key_words[word_idx]['text'].strip()
                 else:
@@ -557,7 +559,7 @@ class PDFExtraction:
 
         return self.pages_of_interest
     
-    def get_first_page_plumber(self):
+    def get_page_plumber(self, offset = 0):
         """
         Get the pdfplumber Page object for the first page of interest.
         
@@ -573,7 +575,10 @@ class PDFExtraction:
         
         # Open PDF and return first page
         pdf = pdfplumber.open(self.pdf_path)
-        return pdf.pages[self.pages_of_interest[0] - 1]  # Subtract 1 for 0-based indexing
+        try:
+            return pdf.pages[self.pages_of_interest[offset] - 1]  # Subtract 1 for 0-based indexing
+        except IndexError:
+            raise ValueError("Invalid page offset")
 
     @staticmethod
     def _validate_path(path):
@@ -663,20 +668,20 @@ class PDFExtraction:
     
     def find_bookmark_pages(self):
         """
-        Find page numbers for a specific bookmark section in the PDF using PyMuPDF and
+        Find page numbers for specific bookmark sections in the PDF using PyMuPDF and
         store them in the pages_of_interest attribute.
         
-        The method searches for a bookmark with the title specified in the configuration's
+        The method searches for bookmarks with the title specified in the configuration's
         page_selection.bookmark_title. It determines the range of pages that fall under
-        this bookmark by looking at the PDF's table of contents structure.
+        these bookmarks by looking at the PDF's table of contents structure.
         
-        The page range is determined by:
-        1. Finding the starting page of the bookmark
+        The page ranges are determined by:
+        1. Finding the starting page of each matching bookmark
         2. Finding the ending page (either the start of the next bookmark at the same
         or higher level, or the last page of the document)
         
         Returns:
-            bool: True if bookmark was found and pages were identified, False otherwise
+            bool: True if bookmarks were found and pages were identified, False otherwise
         
         Raises:
             ValueError: If bookmark_title is not set in the configuration
@@ -698,41 +703,36 @@ class PDFExtraction:
                 logging.warning(f"No bookmarks found in PDF: {self.pdf_path}")
                 return False
             
-            # Find our target bookmark
-            target_level = None
-            target_index = None
-            
+            # Find all target bookmarks
+            target_bookmarks = []
             for i, (level, title, page) in enumerate(toc):
                 if title == bookmark_title:
-                    target_level = level
-                    target_index = i
-                    break
+                    target_bookmarks.append((level, page, i))
             
-            if target_index is None:
+            if not target_bookmarks:
                 logging.warning(f"Bookmark '{bookmark_title}' not found in PDF")
                 return False
             
-            # Get starting page
-            start_page = toc[target_index][2]  # Page number is third element
+            # Determine page ranges for each matching bookmark
+            for target_level, start_page, target_index in target_bookmarks:
+                end_page = None
+                for level, _, page in toc[target_index + 1:]:
+                    if level <= target_level:
+                        end_page = page - 1  # Subtract 1 since next section starts here
+                        break
+                
+                # If no end page found (last bookmark in its section)
+                if end_page is None:
+                    if target_index + 1 < len(toc):
+                        # Use next bookmark's page as end
+                        end_page = toc[target_index + 1][2] - 1
+                    else:
+                        # For last bookmark, use the document's last page
+                        end_page = doc.page_count
+                
+                # Append the range of pages to pages_of_interest
+                self.pages_of_interest.extend(range(start_page, end_page + 1))
             
-            # Find the end page by looking for the next bookmark at same or higher level
-            end_page = None
-            for level, _, page in toc[target_index + 1:]:
-                if level <= target_level:
-                    end_page = page - 1  # Subtract 1 since next section starts here
-                    break
-            
-            # If no end page found (last bookmark in its section)
-            if end_page is None:
-                if target_index + 1 < len(toc):
-                    # Use next bookmark's page as end
-                    end_page = toc[target_index + 1][2] - 1
-                else:
-                    # For last bookmark, use the document's last page
-                    end_page = doc.page_count
-            
-            # Store the range of pages in pages_of_interest
-            self.pages_of_interest = list(range(start_page, end_page + 1))
             logging.info(f"Found {len(self.pages_of_interest)} pages under bookmark '{bookmark_title}'")
             return True
             

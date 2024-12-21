@@ -211,6 +211,23 @@ class PDFExtractionConfig:
         self._post_processing = value
         self.config['post_processing'] = value
 
+    @property
+    def column_filters(self):
+        return self._post_processing.get('column_filters', [])
+
+    @column_filters.setter
+    def column_filters(self, value):
+        table_column_names = self._table_column_names
+
+        if value:
+            for column_filter in value:
+                column_name = column_filter.get('column')
+                if column_name not in table_column_names:
+                    raise ValueError(f"Column filter name '{column_name}' not found in table_column_names")
+
+        self._post_processing['column_filters'] = value
+        self.config['post_processing']['column_filters'] = value
+
     def save_to_yaml(self, output_path):
         """Save the current configuration to a YAML file."""
         with open(output_path, 'w') as file:
@@ -836,7 +853,7 @@ class PDFExtraction:
         table_settings = {
             "vertical_strategy": "explicit",
             "explicit_vertical_lines": [bbox[0]] + self.config.table_columns + [bbox[2]],
-            "horizontal_strategy": "text",
+            "horizontal_strategy": "lines", #"text",
             "snap_y_tolerance": 5,
             "intersection_x_tolerance": 999,
         }
@@ -956,7 +973,7 @@ class PDFExtraction:
         
         return page_image
 
-    def extract_data_from_pdf(self, output_path=None, log_file_path=None, draw_image_path=None, crop_meta=True, create_subset=False):
+    def extract_data_from_pdf(self, output_path=None, log_file_path=None, draw_image_path=None, create_subset=False):
         """
         Extract data from a PDF file based on the specified configuration.
 
@@ -1007,22 +1024,45 @@ class PDFExtraction:
                 logging.info(f"Processing page {i}/{len(pages_to_process)}...")
                 
                 # Extract table from cropped page and convert to dataframe
-                page_cropped = page.crop(self.config.table_area)
-                extracted_table = page_cropped.extract_table(table_settings)
-                table_df = pd.DataFrame(extracted_table[0:])
+                page_cropped = page.crop(self.config.table_area) # Check to make sure that cropping does not impact y position
+                table = page_cropped.find_table(table_settings)
+                extracted_table = table.extract()
+                table_df = pd.DataFrame(extracted_table)
                 table_df.columns = self.config.table_column_names
+                table_df['Line Position'] = [row.bbox[1] for row in table.rows]
                 table_df = self.apply_column_filters(table_df, self.config.post_processing['column_filters'])
-                table_df.insert(0, 'Line Number', table_df.index+1)
                 table_df.insert(0, 'Page Number', self.pages_of_interest[i-1] if not create_subset else i)
                 self.tables_df = pd.concat([self.tables_df, table_df], ignore_index=True)
                 
                 # Extract text line by line and extract metadata
-                if crop_meta:
-                    extracted_lines = page_cropped.extract_table(line_settings)
-                else:
-                    extracted_lines = page.extract_table(line_settings)
-                lines_df = pd.DataFrame(extracted_lines, columns=['text'])
-                meta_df = self.extract_metadata_patterns(lines_df, self.config.metadata_patterns)
+                meta = [page.search(meta['pattern']) for meta in self.config.metadata_patterns]
+                
+                # Assuming meta is the list of search results from pdfplumber
+                result = []
+
+                # Iterate over each entry in the meta list
+                for j, matches in enumerate(meta):
+                    # Extract the columns from the configuration
+                    columns = self.config.metadata_patterns[j]['columns']
+                    
+                    # For each match, extract the groups and their y0 positions
+                    for match in matches:
+                        groups = match['groups']
+                        line_position = match['top']
+                        
+                        # Iterate over each column and group to create a row for each combination
+                        for col, group in zip(columns, groups):
+                            result.append({
+                                'Column Name': col,
+                                'Column Value': group,
+                                'Line Position': line_position
+                            })
+                meta_df = pd.DataFrame(result)
+                # lines = page.extract_table(line_settings)
+                # extracted_lines = lines.extract()
+                # lines_df = pd.DataFrame(extracted_lines, columns=['text'])
+                # lines_df['Line Position'] = [row.bbox[2] for row in lines.rows]
+                # meta_df = self.extract_metadata_patterns(lines_df, self.config.metadata_patterns)
                 meta_df.insert(0, 'Page Number', self.pages_of_interest[i-1] if not create_subset else i)
                 self.metadata_df = pd.concat([self.metadata_df, meta_df], ignore_index=True)
                 
@@ -1043,8 +1083,8 @@ class PDFExtraction:
         logging.info("Extraction completed.")
 
     def combine_extracted_data(self):
-        meta_pivot = self.metadata_df.pivot_table(index=['Page Number', 'Line Number'], columns='Column Name', values='Column Value', aggfunc='first').reset_index()
-        meta_pivot = pd.concat([self.tables_df[['Page Number', 'Line Number']], meta_pivot], ignore_index=True).sort_values(by=['Page Number', 'Line Number']).reset_index(drop=True)
+        meta_pivot = self.metadata_df.pivot_table(index=['Page Number', 'Line Position'], columns='Column Name', values='Column Value', aggfunc='first').reset_index()
+        meta_pivot = pd.concat([self.tables_df[['Page Number', 'Line Position']], meta_pivot], ignore_index=True).sort_values(by=['Page Number', 'Line Position']).reset_index(drop=True)
         meta_pivot = meta_pivot.ffill()
-        self.combined_df = self.tables_df.merge(meta_pivot, on=['Page Number', 'Line Number'], how='left')
+        self.combined_df = self.tables_df.merge(meta_pivot, on=['Page Number', 'Line Position'], how='left')
         self.combined_df = self.combined_df.merge(self.fixed_df, on=['Page Number'])

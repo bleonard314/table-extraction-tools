@@ -13,6 +13,7 @@ from enum import Enum, auto
 from typing import List, Optional, Union, Dict
 import numpy as np
 from PIL import Image
+from dataclasses import dataclass, field
 
 class PageSelectionMethod(Enum):
     """Enum for different page selection methods"""
@@ -21,23 +22,32 @@ class PageSelectionMethod(Enum):
     KEYWORD_BASED = auto()
     BOOKMARK_BASED = auto()
 
+@dataclass
 class PageSelection:
-    """Class to handle different methods of PDF page selection"""
-    def __init__(
-        self,
-        method: PageSelectionMethod = PageSelectionMethod.ALL_PAGES,
-        explicit_pages: Optional[List[int]] = None,
-        keywords_to_keep: Optional[List[str]] = None,
-        keywords_to_remove: Optional[List[str]] = None,
-        require_all_keywords: bool = False,
-        bookmark_title: Optional[str] = None
-    ):
-        self.method = method
-        self.explicit_pages = explicit_pages or []
-        self.keywords_to_keep = keywords_to_keep or []
-        self.keywords_to_remove = keywords_to_remove or []
-        self.require_all_keywords = require_all_keywords
-        self.bookmark_title = bookmark_title
+    method: PageSelectionMethod = field(
+        default=PageSelectionMethod.ALL_PAGES,
+        metadata={"description": "Method used to select PDF pages"}
+    )
+    page_numbers: List[int] = field(
+        default_factory=list,
+        metadata={"description": "List of specific page numbers to process"}
+    )
+    keywords_to_keep: List[str] = field(
+        default_factory=list,
+        metadata={"description": "Keywords that must be present for page selection"}
+    )
+    keywords_to_remove: List[str] = field(
+        default_factory=list,
+        metadata={"description": "Keywords that must not be present for page selection"}
+    )
+    require_all_keywords: bool = field(
+        default=False,
+        metadata={"description": "If True, all keywords must match for page selection"}
+    )
+    bookmark_title: Optional[str] = field(
+        default=None,
+        metadata={"description": "PDF bookmark title to use for page selection"}
+    )
 
     @classmethod
     def all_pages(cls) -> 'PageSelection':
@@ -79,7 +89,7 @@ class PageSelection:
         """Convert the PageSelection instance to a dictionary for YAML storage"""
         return {
             "method": self.method.name,
-            "explicit_pages": self.explicit_pages,
+            "page_numbers": self.page_numbers,
             "keywords_to_keep": self.keywords_to_keep,
             "keywords_to_remove": self.keywords_to_remove,
             "require_all_keywords": self.require_all_keywords,
@@ -91,7 +101,7 @@ class PageSelection:
         """Create a PageSelection instance from a dictionary"""
         return cls(
             method=PageSelectionMethod[data.get("method", "ALL_PAGES")],
-            explicit_pages=data.get("explicit_pages"),
+            page_numbers=data.get("page_numbers"),
             keywords_to_keep=data.get("keywords_to_keep"),
             keywords_to_remove=data.get("keywords_to_remove"),
             require_all_keywords=data.get("require_all_keywords", False),
@@ -869,33 +879,32 @@ class PDFExtraction:
         return table_settings, line_settings
         
     @staticmethod
-    def extract_metadata_patterns(df_lines, patterns):
-        # Initialize empty dataframe to store expanded lines and metadata
-        df_metadata = pd.DataFrame()
+    def extract_metadata_patterns(page, patterns):
+        # Extract text line by line and extract metadata
+        meta = [page.search(meta['pattern']) for meta in patterns]
+        
+        # Assuming meta is the list of search results from pdfplumber
+        result = []
 
-        # Apply each configured pattern to extract data into new columns
-        for item in patterns:
-            # Extract data based on the pattern and assign column names based on the config
-            temp_columns = df_lines["text"].str.extract(item["pattern"])
-            temp_columns.columns = item["columns"]
+        # Iterate over each entry in the meta list
+        for j, matches in enumerate(meta):
+            # Extract the columns from the configuration
+            columns = patterns[j]['columns']
             
-            # Filter to only non-null values and populate metadata dataframe
-            for column in temp_columns.columns:
-                temp_df = temp_columns[column].dropna()
-                df_metadata = pd.concat(
-                    [
-                        df_metadata,
-                        pd.DataFrame(
-                            {
-                                "Line Number": temp_df.index+1,
-                                "Column Name": column,
-                                "Column Value": temp_df.values,
-                            }
-                        ),
-                    ]
-                )
-
-        return df_metadata
+            # For each match, extract the groups and their y0 positions
+            for match in matches:
+                groups = match['groups']
+                line_position = match['top']
+                
+                # Iterate over each column and group to create a row for each combination
+                for col, group in zip(columns, groups):
+                    result.append({
+                        'Column Name': col,
+                        'Column Value': group,
+                        'Line Position': line_position
+                    })
+                    
+        return pd.DataFrame(result)
 
     @staticmethod
     def apply_column_filters(df, column_filters):
@@ -1034,35 +1043,7 @@ class PDFExtraction:
                 table_df.insert(0, 'Page Number', self.pages_of_interest[i-1] if not create_subset else i)
                 self.tables_df = pd.concat([self.tables_df, table_df], ignore_index=True)
                 
-                # Extract text line by line and extract metadata
-                meta = [page.search(meta['pattern']) for meta in self.config.metadata_patterns]
-                
-                # Assuming meta is the list of search results from pdfplumber
-                result = []
-
-                # Iterate over each entry in the meta list
-                for j, matches in enumerate(meta):
-                    # Extract the columns from the configuration
-                    columns = self.config.metadata_patterns[j]['columns']
-                    
-                    # For each match, extract the groups and their y0 positions
-                    for match in matches:
-                        groups = match['groups']
-                        line_position = match['top']
-                        
-                        # Iterate over each column and group to create a row for each combination
-                        for col, group in zip(columns, groups):
-                            result.append({
-                                'Column Name': col,
-                                'Column Value': group,
-                                'Line Position': line_position
-                            })
-                meta_df = pd.DataFrame(result)
-                # lines = page.extract_table(line_settings)
-                # extracted_lines = lines.extract()
-                # lines_df = pd.DataFrame(extracted_lines, columns=['text'])
-                # lines_df['Line Position'] = [row.bbox[2] for row in lines.rows]
-                # meta_df = self.extract_metadata_patterns(lines_df, self.config.metadata_patterns)
+                meta_df = self.extract_metadata_patterns(page.extract_text_lines(), self.config.metadata_patterns)
                 meta_df.insert(0, 'Page Number', self.pages_of_interest[i-1] if not create_subset else i)
                 self.metadata_df = pd.concat([self.metadata_df, meta_df], ignore_index=True)
                 

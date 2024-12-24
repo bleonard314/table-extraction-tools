@@ -10,7 +10,7 @@ import os
 import logging
 import re
 from enum import Enum, auto
-from typing import List, Optional, Union, Dict
+from typing import List, Optional, Union, Dict, Any
 import numpy as np
 from PIL import Image
 from dataclasses import dataclass, field
@@ -108,6 +108,52 @@ class PageSelection:
             bookmark_title=data.get("bookmark_title")
         )
 
+@dataclass
+class ColumnFilter:
+    """Configuration for column-specific filtering."""
+    column: str
+    regex: str
+
+@dataclass
+class PostProcessingConfig:
+    """Configuration for post-processing of extracted PDF data."""
+    explicit_line_numbers: Optional[List[int]] = field(
+        default=None,
+        metadata={"description": "Specific line numbers to process"}
+    )
+    column_filters: List[ColumnFilter] = field(
+        default_factory=list,
+        metadata={"description": "Regular expression filters for specific columns"}
+    )
+    convert_column_names: bool = field(
+        default=False,
+        metadata={"description": "Whether to convert column names to snake_case"}
+    )
+    convert_data_types: bool = field(
+        default=True,
+        metadata={"description": "Whether to automatically convert data types"}
+    )
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert configuration to dictionary for serialization."""
+        return {
+            "explicit_line_numbers": self.explicit_line_numbers,
+            "column_filters": [{"column": f.column, "regex": f.regex} for f in self.column_filters],
+            "convert_column_names": self.convert_column_names,
+            "convert_data_types": self.convert_data_types
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'PostProcessingConfig':
+        """Create configuration from dictionary."""
+        column_filters = [ColumnFilter(**f) for f in data.get('column_filters', [])]
+        return cls(
+            explicit_line_numbers=data.get('explicit_line_numbers'),
+            column_filters=column_filters,
+            convert_column_names=data.get('convert_column_names', False),
+            convert_data_types=data.get('convert_data_types', True)
+        )
+        
 class PDFExtractionConfig:
     def __init__(self, config_path=None):
         # Load configuration from a YAML file

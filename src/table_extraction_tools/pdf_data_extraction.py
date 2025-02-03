@@ -59,7 +59,7 @@ class PageSelection:
         """Create a PageSelection instance for explicitly listed pages"""
         return cls(
             method=PageSelectionMethod.EXPLICIT_PAGES,
-            explicit_pages=pages
+            page_numbers=pages
         )
 
     @classmethod
@@ -358,6 +358,111 @@ class PDFExtractionConfig:
 
         return bbox
     
+    def table_columns_from_line(
+        self,
+        page,
+        line_number: int,
+        column_justification: List[str],
+        column_buffers: List[int],
+        debug: bool = False
+    ) -> None:
+        """
+        Compute the vertical boundaries (column separators) for table columns from a header line in a PDF page.
+        
+        Args:
+            page: A pdfplumber page (or similar) to extract the line from.
+            line_number (int): The line number (1-based) in the page to use for detecting column positions.
+            column_justification (List[str]): A list specifying the justification for each detected column.
+                For example: ["left", "left", "left", "left", "right", "right", "right"].
+            column_buffers (List[int]): A list of pixel buffers (one per column) used to adjust the boundaries.
+            debug (bool): If True, draws the word bounding boxes and computed vertical lines on the header image
+                for visual debugging.
+        
+        Raises:
+            ValueError: If the provided column_justification or column_buffers lists do not match the number
+                of detected words in the header line.
+                
+        Updates:
+            The `table_columns` attribute of the configuration is updated with the computed boundary positions.
+        """
+        # Extract all text lines from the page.
+        page_text_lines = page.extract_text_lines()
+        if line_number < 1 or line_number > len(page_text_lines):
+            raise ValueError(f"line_number must be between 1 and {len(page_text_lines)}; got {line_number}")
+        
+        # Get the header line (adjusting for 1-based numbering)
+        header_line = page_text_lines[line_number - 1]
+        
+        # Construct the bounding box for the header line using the table_area from the configuration.
+        # (Assumes that self.table_area is a dict with keys "x0" and "x1".)
+        table_area = self.table_area
+        line_bbox = (table_area[0], header_line["top"], table_area[2], header_line["bottom"])
+        
+        # Crop the page to the header line.
+        line_page = page.crop(line_bbox)
+        
+        # If debugging, convert the cropped area to an image to draw on.
+        if debug:
+            line_page_image = line_page.to_image(resolution=150)
+            line_page_image.reset()
+        
+        # Extract words (with their bounding boxes) from the cropped header line.
+        line_words = line_page.extract_words(keep_blank_chars=True)
+        # Sort the words by their x-coordinate.
+        line_words = sorted(line_words, key=lambda word: word["x0"])
+        # Update configuration with the detected column names.
+        self.table_column_names = [word["text"].strip() for word in line_words]
+        
+        # Validate that the provided column configuration lists match the number of detected words.
+        if len(column_justification) != len(line_words):
+            raise ValueError(
+                f"Length of column_justification ({len(column_justification)}) must match "
+                f"the number of detected words ({len(line_words)})."
+            )
+        if len(column_buffers) != len(line_words):
+            raise ValueError(
+                f"Length of column_buffers ({len(column_buffers)}) must match "
+                f"the number of detected words ({len(line_words)})."
+            )
+        
+        # Optionally draw bounding boxes around each detected word.
+        if debug:
+            for word in line_words:
+                bbox = (word["x0"], word["top"], word["x1"], word["bottom"])
+                line_page_image.draw_rect(bbox, fill=None, stroke_width=1)
+        
+        # Compute boundaries between adjacent columns.
+        boundaries = []
+        for idx in range(len(line_words) - 1):
+            current_word = line_words[idx]
+            next_word = line_words[idx + 1]
+            just = column_justification[idx].lower()
+            
+            if just == "left":
+                # For left-justified columns, use the next word's left edge minus the current column's buffer.
+                boundary = next_word["x0"] - column_buffers[idx]
+            elif just == "right":
+                # For right-justified columns, use the current word's right edge plus the current column's buffer.
+                boundary = current_word["x1"] + column_buffers[idx]
+            elif just == "center":
+                # For center-justified columns, average an adjusted right edge and left edge.
+                boundary = ((current_word["x1"] + column_buffers[idx]) +
+                            (next_word["x0"] - column_buffers[idx + 1])) / 2
+            else:
+                # Fallback: use the simple midpoint between the current word’s right edge and the next word’s left edge.
+                boundary = (current_word["x1"] + next_word["x0"]) / 2
+            
+            boundaries.append(boundary)
+            if debug:
+                line_page_image.draw_vline(boundary, stroke_width=1)
+        
+        # Update the configuration with the computed boundaries.
+        self.table_columns = boundaries
+        
+        if debug:
+            # Display the image with drawn lines for visual confirmation.
+            return line_page_image
+    
     def metadata_patterns_from_lines(self, page, line_numbers: List[int], terminator_text: str = ":", fill_direction: str = "down") -> List[Dict]:
         """
         Create metadata extraction patterns from specific lines in a PDF page.
@@ -622,7 +727,7 @@ class PDFExtraction:
                 self.pages_of_interest = list(range(1, len(pdf.pages) + 1))
 
         elif selection.method == PageSelectionMethod.EXPLICIT_PAGES:
-            self.pages_of_interest = selection.explicit_pages
+            self.pages_of_interest = selection.page_numbers
 
         elif selection.method == PageSelectionMethod.KEYWORD_BASED:
             self.find_keyword_pages()
@@ -909,8 +1014,8 @@ class PDFExtraction:
         table_settings = {
             "vertical_strategy": "explicit",
             "explicit_vertical_lines": [bbox[0]] + self.config.table_columns + [bbox[2]],
-            "horizontal_strategy": "lines", #"text",
-            "snap_y_tolerance": 5,
+            "horizontal_strategy": "text",  # "lines"
+            "snap_y_tolerance": 7,
             "intersection_x_tolerance": 999,
         }
         
@@ -929,6 +1034,10 @@ class PDFExtraction:
         # Extract text line by line and extract metadata
         meta = [page.search(meta['pattern']) for meta in patterns]
         
+        # Check if any metadata was found
+        if not any(meta):
+            return pd.DataFrame()
+        
         # Assuming meta is the list of search results from pdfplumber
         result = []
 
@@ -940,16 +1049,17 @@ class PDFExtraction:
             # For each match, extract the groups and their y0 positions
             for match in matches:
                 groups = match['groups']
-                line_position = match['top']
+                line_position = int(round(match['top'], 0))
                 
                 # Iterate over each column and group to create a row for each combination
                 for col, group in zip(columns, groups):
-                    result.append({
-                        'Column Name': col,
-                        'Column Value': group,
-                        'Line Position': line_position
-                    })
-                    
+                    if group:
+                        result.append({
+                            'Column Name': col,
+                            'Column Value': group,
+                            'Line Position': line_position
+                        })
+                        
         return pd.DataFrame(result)
 
     @staticmethod
@@ -1028,7 +1138,7 @@ class PDFExtraction:
         
         return page_image
 
-    def extract_data_from_pdf(self, output_path=None, log_file_path=None, draw_image_path=None, create_subset=False):
+    def extract_data_from_pdf(self, output_path=None, log_file_path=None, draw_image_path=None, create_subset=False, crop_meta=True):
         """
         Extract data from a PDF file based on the specified configuration.
 
@@ -1084,12 +1194,12 @@ class PDFExtraction:
                 extracted_table = table.extract()
                 table_df = pd.DataFrame(extracted_table)
                 table_df.columns = self.config.table_column_names
-                table_df['Line Position'] = [row.bbox[1] for row in table.rows]
+                table_df['Line Position'] = [int(round(row.bbox[1], 0)) for row in table.rows]
                 table_df = self.apply_column_filters(table_df, self.config.post_processing['column_filters'])
                 table_df.insert(0, 'Page Number', self.pages_of_interest[i-1] if not create_subset else i)
                 self.tables_df = pd.concat([self.tables_df, table_df], ignore_index=True)
                 
-                meta_df = self.extract_metadata_patterns(page.extract_text_lines(), self.config.metadata_patterns)
+                meta_df = self.extract_metadata_patterns(page_cropped if crop_meta else page, self.config.metadata_patterns)
                 meta_df.insert(0, 'Page Number', self.pages_of_interest[i-1] if not create_subset else i)
                 self.metadata_df = pd.concat([self.metadata_df, meta_df], ignore_index=True)
                 
@@ -1110,8 +1220,23 @@ class PDFExtraction:
         logging.info("Extraction completed.")
 
     def combine_extracted_data(self):
-        meta_pivot = self.metadata_df.pivot_table(index=['Page Number', 'Line Position'], columns='Column Name', values='Column Value', aggfunc='first').reset_index()
-        meta_pivot = pd.concat([self.tables_df[['Page Number', 'Line Position']], meta_pivot], ignore_index=True).sort_values(by=['Page Number', 'Line Position']).reset_index(drop=True)
-        meta_pivot = meta_pivot.ffill()
+        # Pivot metadata to spread column names into separate columns
+        meta_pivot = self.metadata_df.pivot_table(
+            index=['Page Number', 'Line Position'],
+            columns='Column Name',
+            values='Column Value',
+            aggfunc='first'
+        ).reset_index()
+
+        # Combine metadata with table data
+        meta_pivot = pd.concat(
+            [self.tables_df[['Page Number', 'Line Position']], meta_pivot],
+            ignore_index=True
+        ).sort_values(by=['Page Number', 'Line Position']).reset_index(drop=True)
+
+        # Apply ffill within each page, and reset the index to keep 'Page Number'
+        meta_pivot = meta_pivot.groupby('Page Number').apply(lambda x: x.ffill()).reset_index(drop=True)
+
+        # Merge combined metadata back to tables
         self.combined_df = self.tables_df.merge(meta_pivot, on=['Page Number', 'Line Position'], how='left')
         self.combined_df = self.combined_df.merge(self.fixed_df, on=['Page Number'])

@@ -361,58 +361,75 @@ class PDFExtractionConfig:
     def table_columns_from_line(
         self,
         page,
-        line_number: int,
-        column_justification: List[str],
-        column_buffers: List[int],
+        line_number: Optional[int] = None,
+        line_coords: Optional[Dict[str, float]] = None,
+        column_justification: Optional[List[str]] = None,
+        column_buffers: Optional[List[int]] = None,
         debug: bool = False
     ) -> None:
         """
         Compute the vertical boundaries (column separators) for table columns from a header line in a PDF page.
-        
+
         Args:
             page: A pdfplumber page (or similar) to extract the line from.
-            line_number (int): The line number (1-based) in the page to use for detecting column positions.
-            column_justification (List[str]): A list specifying the justification for each detected column.
-                For example: ["left", "left", "left", "left", "right", "right", "right"].
-            column_buffers (List[int]): A list of pixel buffers (one per column) used to adjust the boundaries.
+            line_number (int, optional): The line number (1-based) in the page to use for detecting column positions.
+            line_coords (dict, optional): A dictionary with 'top' and 'bottom' coordinates of the line.
+            column_justification (List[str], optional): A list specifying the justification for each detected column.
+                Defaults to all columns being left-justified.
+            column_buffers (List[int], optional): A list of pixel buffers (one per column) used to adjust the boundaries.
+                Defaults to no buffers.
             debug (bool): If True, draws the word bounding boxes and computed vertical lines on the header image
                 for visual debugging.
-        
+
         Raises:
+            ValueError: If neither line_number nor line_coords is provided, or if both are provided.
             ValueError: If the provided column_justification or column_buffers lists do not match the number
                 of detected words in the header line.
-                
+
         Updates:
             The `table_columns` attribute of the configuration is updated with the computed boundary positions.
         """
+        if (line_number is None and line_coords is None) or (line_number is not None and line_coords is not None):
+            raise ValueError("You must provide either line_number or line_coords, but not both.")
+
         # Extract all text lines from the page.
         page_text_lines = page.extract_text_lines()
-        if line_number < 1 or line_number > len(page_text_lines):
-            raise ValueError(f"line_number must be between 1 and {len(page_text_lines)}; got {line_number}")
-        
-        # Get the header line (adjusting for 1-based numbering)
-        header_line = page_text_lines[line_number - 1]
-        
+
+        if line_number is not None:
+            if line_number < 1 or line_number > len(page_text_lines):
+                raise ValueError(f"line_number must be between 1 and {len(page_text_lines)}; got {line_number}")
+            # Get the header line (adjusting for 1-based numbering)
+            header_line = page_text_lines[line_number - 1]
+            top, bottom = header_line["top"], header_line["bottom"]
+        else:
+            # Use the provided line coordinates
+            top, bottom = line_coords["top"], line_coords["bottom"]
+
         # Construct the bounding box for the header line using the table_area from the configuration.
-        # (Assumes that self.table_area is a dict with keys "x0" and "x1".)
         table_area = self.table_area
-        line_bbox = (table_area[0], header_line["top"], table_area[2], header_line["bottom"])
-        
+        line_bbox = (table_area[0], top, table_area[2], bottom)
+
         # Crop the page to the header line.
         line_page = page.crop(line_bbox)
-        
+
         # If debugging, convert the cropped area to an image to draw on.
         if debug:
             line_page_image = line_page.to_image(resolution=150)
             line_page_image.reset()
-        
+
         # Extract words (with their bounding boxes) from the cropped header line.
-        line_words = line_page.extract_words(keep_blank_chars=True)
+        line_words = line_page.extract_words(keep_blank_chars=True, y_tolerance=999)
         # Sort the words by their x-coordinate.
         line_words = sorted(line_words, key=lambda word: word["x0"])
         # Update configuration with the detected column names.
         self.table_column_names = [word["text"].strip() for word in line_words]
-        
+
+        # Set default values for column_justification and column_buffers if not provided.
+        if column_justification is None:
+            column_justification = ["left"] * len(line_words)
+        if column_buffers is None:
+            column_buffers = [0] * len(line_words)
+
         # Validate that the provided column configuration lists match the number of detected words.
         if len(column_justification) != len(line_words):
             raise ValueError(
@@ -424,20 +441,20 @@ class PDFExtractionConfig:
                 f"Length of column_buffers ({len(column_buffers)}) must match "
                 f"the number of detected words ({len(line_words)})."
             )
-        
+
         # Optionally draw bounding boxes around each detected word.
         if debug:
             for word in line_words:
                 bbox = (word["x0"], word["top"], word["x1"], word["bottom"])
                 line_page_image.draw_rect(bbox, fill=None, stroke_width=1)
-        
+
         # Compute boundaries between adjacent columns.
         boundaries = []
         for idx in range(len(line_words) - 1):
             current_word = line_words[idx]
             next_word = line_words[idx + 1]
             just = column_justification[idx].lower()
-            
+
             if just == "left":
                 # For left-justified columns, use the next word's left edge minus the current column's buffer.
                 boundary = next_word["x0"] - column_buffers[idx]
@@ -451,19 +468,26 @@ class PDFExtractionConfig:
             else:
                 # Fallback: use the simple midpoint between the current word’s right edge and the next word’s left edge.
                 boundary = (current_word["x1"] + next_word["x0"]) / 2
-            
+
             boundaries.append(boundary)
             if debug:
                 line_page_image.draw_vline(boundary, stroke_width=1)
-        
+
         # Update the configuration with the computed boundaries.
         self.table_columns = boundaries
-        
+
         if debug:
             # Display the image with drawn lines for visual confirmation.
             return line_page_image
     
-    def metadata_patterns_from_lines(self, page, line_numbers: List[int], terminator_text: str = ":", fill_direction: str = "down") -> List[Dict]:
+    def metadata_patterns_from_lines(
+        self, 
+        page, 
+        line_numbers: List[int], 
+        terminator_text: str = ":", 
+        fill_direction: str = "down",
+        **kwargs: Dict[str, Any]
+        ) -> List[Dict]:
         """
         Create metadata extraction patterns from specific lines in a PDF page.
         
@@ -502,7 +526,7 @@ class PDFExtractionConfig:
             # Extract the bounding box coordinates from the line
             bbox = [line['x0'], line['top'], line['x1'], line['bottom']]
             page_cropped = page.crop(bbox)
-            line_words = page_cropped.extract_words(keep_blank_chars=True, x_tolerance_ratio=0.3) # x_tolerance = 2 also works for Pace
+            line_words = page_cropped.extract_words(keep_blank_chars=True, **kwargs)
             
             column_names = []
             pattern_parts = []
@@ -514,7 +538,7 @@ class PDFExtractionConfig:
                     is_last_field = idx + 2 == len(line_words)
                     
                     # Use non-greedy match (?.*?) for middle fields, greedy match (.*) for last field
-                    pattern_part = text + " (.*)" if is_last_field else text + " (.*?)"
+                    pattern_part = text + "\s*(.*)" if is_last_field else text + "\s*(.*?)"
                     pattern_parts.append(pattern_part)
                     
                     # Store column name without terminator
@@ -536,7 +560,8 @@ class PDFExtractionConfig:
         line_numbers: List[int],
         key_separator: Optional[str] = ":",
         key_line_numbers: Optional[List[int]] = None,
-        expand: List[float] = [0, 0, 0, 0]
+        expand: List[float] = [0, 0, 0, 0],
+        **kwargs
     ) -> None:
         """
         Create fixed text areas configuration from specific lines in a PDF page.
@@ -587,12 +612,12 @@ class PDFExtractionConfig:
         for line_idx, line in enumerate(fixed_lines):
             # Get bbox for current line
             line_bbox = [line['x0'], line['top'], line['x1'], line['bottom']]
-            line_words = page.crop(line_bbox).extract_words(keep_blank_chars=True, return_chars=True)
+            line_words = page.crop(line_bbox).extract_words(keep_blank_chars=True, return_chars=True, **kwargs)
             
             if key_lines:
                 key_bbox = [key_lines[line_idx]['x0'], key_lines[line_idx]['top'], 
                         key_lines[line_idx]['x1'], key_lines[line_idx]['bottom']]
-                key_words = page.crop(key_bbox).extract_words(keep_blank_chars=True, return_chars=True)
+                key_words = page.crop(key_bbox).extract_words(keep_blank_chars=True, return_chars=True, **kwargs)
             else:
                 key_words = None
                 
@@ -707,6 +732,7 @@ class PDFExtractionConfig:
 class PDFExtraction:
     def __init__(self, pdf_path, config: PDFExtractionConfig):
         self.pdf_path = self._validate_path(pdf_path)
+        self.pdf = pdfplumber.open(self.pdf_path)
         self.subset_path = None
         self.config = config
         self.pages_of_interest = []
@@ -752,9 +778,8 @@ class PDFExtraction:
             raise ValueError("No pages of interest found in the PDF")
         
         # Open PDF and return first page
-        pdf = pdfplumber.open(self.pdf_path)
         try:
-            return pdf.pages[self.pages_of_interest[offset] - 1]  # Subtract 1 for 0-based indexing
+            return self.pdf.pages[self.pages_of_interest[offset] - 1]  # Subtract 1 for 0-based indexing
         except IndexError:
             raise ValueError("Invalid page offset")
 
